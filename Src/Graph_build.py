@@ -106,6 +106,16 @@ def build_semantic_adjacency(
         Shape [N, W] or [N, W, 1].
     tcc : torch.Tensor
         Shape [N, W] or [N, W, 1].
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        A dictionary containing:
+        - A_dtw: pairwise DTW distance matrix.
+        - A_sim: similarity matrix from Gaussian kernel.
+        - A_topk: top-k sparsified similarity adjacency.
+        - A_row_norm: row-normalized similarity adjacency.
+        - A_sym_norm: symmetric normalized similarity adjacency.
     """
     ghi = ghi.float()
     tcc = tcc.float()
