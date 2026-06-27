@@ -1,7 +1,7 @@
 """
 Fusion Module for Multi-Graph Spatial Embeddings
 
-Combines outputs from three GATv2 spatial encoders (static, dynamic, wind graphs)
+Combines outputs from three GATv2 spatial encoders (static, semantic, wind graphs)
 into a single unified spatial representation via learned fusion weights.
 """
 
@@ -129,7 +129,7 @@ class LearnedWeightFusion(nn.Module):
 class SpatialFusionModule(nn.Module):
     """
     Complete fusion module that combines embeddings from three GATv2 encoders
-    (static, dynamic, wind graph types).
+    (static, semantic, wind graph types).
     
     Supports multiple fusion strategies: attention, concatenation, or learned weights.
     """
