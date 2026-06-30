@@ -10,7 +10,7 @@ Multi-graph spatial encoder using **GATv2** (Graph Attention Networks v2) with l
   - `SpatialGATv2EncoderBatched`: Batched version for Colab training
 
 - **`fusion_module.py`**: Fusion strategies for combining graph embeddings
-  - `AttentionFusion`: Learns importance per graph
+  - `AttentionFusion`: Context-aware node-wise attention over all 3 graphs
   - `ConcatFusion`: Concatenate + project
   - `LearnedWeightFusion`: Fixed learnable weights
   - `SpatialFusionModule`: Main module with strategy selection
@@ -87,12 +87,14 @@ Edge bias formula:
 $$e_{ij}^{(\ell)} = \beta \cdot \log(A_{ij})$$
 where $A_{ij}$ is the adjacency weight, preventing $\log(0)$ via clamping.
 
-### Fusion Module (Attention-based)
+### Fusion Module (Context-aware attention)
 
 ```
 [emb_static, emb_dynamic, emb_wind]  (3 × [N, F])
     ↓
-Attention scoring per graph
+Concatenate all 3 embeddings per node
+    ↓
+Joint MLP scores the combined context
     ↓
 Softmax weights α ∈ [0,1]³
     ↓
@@ -111,7 +113,7 @@ Fused: z = α₀·emb_static + α₁·emb_dynamic + α₂·emb_wind
 ### SpatialFusionModule
 - `embedding_dim`: Must match encoder's `out_features`
 - `n_graphs`: Always 3
-- `fusion_method`: 'attention' (learns weights), 'concat' (concatenate+project), 'learned' (fixed scalars)
+- `fusion_method`: 'attention' (context-aware joint scoring), 'concat' (concatenate+project), 'learned' (fixed scalars)
 - `dropout`: Dropout in fusion network
 
 ## Integration with Encoder-Decoder
@@ -183,7 +185,7 @@ edge_idx, edge_wt = dense_to_sparse(A)
 **Fusion weights not learning**
 - Check gradients flow to fusion module
 - Increase learning rate or fusion dropout
-- Verify embeddings are not all zero
+- Verify the 3 graph embeddings are not all zero
 
 ## Citation
 

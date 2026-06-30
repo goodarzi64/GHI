@@ -1,8 +1,9 @@
 """
 Spatial Encoder + Fusion Integration Example
 
-Demonstrates how to use GATv2EdgeBiasConv spatial encoder and fusion module
-with the three graph types (static, dynamic, wind) in a Colab environment.
+Demonstrates how to use GATv2EdgeBiasConv spatial encoder and the
+context-aware fusion module with the three graph types (static, dynamic,
+wind) in a Colab environment.
 
 For Colab setup, install dependencies in first cell:
     !pip install torch torch-geometric torch-geometric-temporal pyproj scikit-learn
@@ -50,7 +51,7 @@ class SpatialEncoderWithFusion(nn.Module):
             dropout=dropout,
         )
         
-        # Fusion module
+        # Context-aware fusion module: each graph branch is scored jointly.
         self.fusion = SpatialFusionModule(
             embedding_dim=spatial_out_features,
             n_graphs=3,
@@ -81,7 +82,7 @@ class SpatialEncoderWithFusion(nn.Module):
         # Encode via GATv2 per graph
         embeddings = self.spatial_encoder(x_batch, edge_indices, edge_weights)
         
-        # Fuse
+        # Fuse via joint attention over the 3 graph embeddings.
         spatial_repr = self.fusion(embeddings)
         
         if return_per_graph:

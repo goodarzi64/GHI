@@ -15,8 +15,9 @@ class AttentionFusion(nn.Module):
     """
     Attention-based fusion of multi-graph embeddings.
     
-    Learns importance weights for each graph type via attention mechanism,
-    then produces a weighted combination: z = sum(alpha_i * z_i)
+    Learns context-aware importance weights for each graph type.
+    Instead of scoring each embedding independently, the gate first sees
+    the full concatenation of all graph embeddings per node.
     """
     
     def __init__(self, embedding_dim: int, n_graphs: int = 3, dropout: float = 0.1):
@@ -24,12 +25,15 @@ class AttentionFusion(nn.Module):
         self.embedding_dim = embedding_dim
         self.n_graphs = n_graphs
         
-        # Attention scoring network: [F] -> scalar per graph
+        joint_input_dim = embedding_dim * n_graphs
+        hidden_dim = max(embedding_dim // 2, n_graphs)
+
+        # Context-aware scoring network: [G * F] -> [G]
         self.attention = nn.Sequential(
-            nn.Linear(embedding_dim, embedding_dim // 2),
+            nn.Linear(joint_input_dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(embedding_dim // 2, 1),
+            nn.Linear(hidden_dim, n_graphs),
         )
         
         # Optional: learnable temperature for controlling focus
@@ -45,14 +49,13 @@ class AttentionFusion(nn.Module):
         Returns:
             Fused embedding [N, F] or [B, N, F]
         """
-        scores = []
-        for emb in embeddings:
-            # Compute attention score per node/batch
-            score = self.attention(emb)  # [N, 1] or [B, N, 1]
-            scores.append(score)
+        if len(embeddings) != self.n_graphs:
+            raise ValueError(f"Expected {self.n_graphs} embeddings, got {len(embeddings)}")
+
+        # Joint context: each graph sees the others before scoring.
+        joint = torch.cat(embeddings, dim=-1)  # [N, G*F] or [B, N, G*F]
+        scores = self.attention(joint)  # [N, G] or [B, N, G]
         
-        # Stack and softmax: [N, G] or [B, N, G]
-        scores = torch.cat(scores, dim=-1)
         alpha = F.softmax(scores / self.temperature, dim=-1)
         
         # Weighted sum
