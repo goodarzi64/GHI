@@ -200,6 +200,250 @@ def build_static_adjacency(
     return out
 
 
+def build_wind_cloud_adjacency(
+    D_ij: torch.Tensor,
+    Theta_ij: torch.Tensor,
+    wind_sp: torch.Tensor,
+    wind_dir: torch.Tensor,
+    tcc: torch.Tensor | None = None,
+    R: float = 150.0,
+    lambda_theta: float = 1.0,
+    cone_half_angle: float | None = None,
+    cloud_cover_alpha: float = 1.0,
+    k: int = 5,
+    self_loops: bool = False,
+    sparse: bool = False,
+    topk_sym: bool = False,
+) -> Dict[str, torch.Tensor]:
+    """
+    Build a wind/cloud-informed adjacency from node-level wind features.
+
+    Parameters
+    ----------
+    D_ij : [N, N] distance matrix.
+    Theta_ij : [N, N] bearing matrix (radians).
+    wind_sp : [N] or [B, N] tensor of wind speeds.
+    wind_dir : [N] or [B, N] tensor of wind directions in radians.
+    tcc : [N] or [B, N] tensor of cloud cover values. Optional.
+    R : float
+        Distance decay scale.
+    lambda_theta : float
+        Wind alignment sharpness.
+    cone_half_angle : float | None
+        If set, restricts edges to nodes within the wind cone.
+    cloud_cover_alpha : float
+        Multiplier for cloud cover adjustment.
+    k : int
+        Number of neighbors to keep when sparsifying.
+    self_loops : bool
+        Whether to keep self-loops in the adjacency.
+    sparse : bool
+        If True, use top-k sparsification inside the wind adjacency module.
+    topk_sym : bool
+        If True, symmetrize and sparsify the resulting adjacency.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        - A_wind: wind/cloud adjacency [N, N] or [B, N, N].
+        - A_row_norm: row-normalized adjacency.
+        - A_sym_norm: symmetric normalized adjacency.
+        - A_topk: sparsified adjacency if `topk_sym` is True.
+    """
+    wind_sp = wind_sp.float()
+    wind_dir = wind_dir.float()
+
+    if wind_sp.dim() == 1:
+        wind_sp = wind_sp.unsqueeze(0)
+    if wind_dir.dim() == 1:
+        wind_dir = wind_dir.unsqueeze(0)
+
+    if tcc is not None:
+        tcc = tcc.float()
+        if tcc.dim() == 1:
+            tcc = tcc.unsqueeze(0)
+        wind_feats = torch.stack([wind_sp, wind_dir, tcc], dim=-1)
+        cloud_cover_pos = 2
+    else:
+        wind_feats = torch.stack([wind_sp, wind_dir], dim=-1)
+        cloud_cover_pos = None
+
+    wind_module = WindAdjacency(
+        D_ij,
+        Theta_ij,
+        R=R,
+        lambda_theta=lambda_theta,
+        cone_half_angle=cone_half_angle,
+        wind_speed_pos=0,
+        wind_dir_pos=1,
+        cloud_cover_pos=cloud_cover_pos,
+        cloud_cover_alpha=cloud_cover_alpha,
+    )
+
+    A = wind_module(wind_feats, sparse=sparse, k=k, self_loops=self_loops)
+    if topk_sym and not sparse:
+        A = topk_row(A, k=k, sym=True, eps=1e-8)
+
+    out = {
+        "A_wind": A,
+        "A_row_norm": row_normalize(A, eps=1e-8),
+        "A_sym_norm": symmetry_normalize(A, eps=1e-8),
+    }
+    if topk_sym:
+        out["A_topk"] = topk_row(A, k=k, sym=True, eps=1e-8)
+
+    return out
+
+
+def build_dtw_adjacency(
+    X: torch.Tensor,
+    sigma: float | None = None,
+    k: int = 5,
+    self_loops: bool = False,
+    topk_sym: bool = False,
+) -> Dict[str, torch.Tensor]:
+    """
+    Build a DTW-based similarity adjacency from multivariate node windows.
+
+    Parameters
+    ----------
+    X : [N, W, F] or [N, W] tensor.
+        Node windows over time.
+    sigma : float | None
+        Gaussian kernel width. If None, estimated from upper triangle.
+    k : int
+        Number of neighbors used for optional sparsification.
+    self_loops : bool
+        Whether to keep self-loops in the similarity matrix.
+    topk_sym : bool
+        If True, returns an additional symmetric top-k adjacency.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        - A_dtw: DTW distance matrix [N, N].
+        - A_sim: Gaussian similarity matrix [N, N].
+        - A_row_norm: row-normalized similarity.
+        - A_sym_norm: symmetric normalized similarity.
+        - A_topk: optional sparsified adjacency if `topk_sym` is True.
+    """
+    if X.ndim == 2:
+        X = X.unsqueeze(-1)
+    if X.ndim != 3:
+        raise ValueError("X must have shape [N, W, F] or [N, W].")
+
+    N, W, F = X.shape
+    dtw_dist = torch.zeros((N, N), device=X.device, dtype=torch.float32)
+    for i in range(N):
+        for j in range(i + 1, N):
+            dist = dtw_distance(X[i], X[j])
+            dtw_dist[i, j] = dist
+            dtw_dist[j, i] = dist
+
+    if sigma is None:
+        mask = torch.triu(torch.ones_like(dtw_dist), diagonal=1).bool()
+        sigma = torch.std(dtw_dist[mask]) if dtw_dist[mask].numel() else torch.tensor(1.0, device=X.device)
+    else:
+        sigma = torch.tensor(sigma, device=X.device, dtype=torch.float32)
+
+    A_sim = torch.exp(- (dtw_dist ** 2) / (2 * sigma ** 2))
+    if not self_loops:
+        A_sim.fill_diagonal_(0)
+
+    out = {
+        "A_dtw": dtw_dist,
+        "A_sim": A_sim,
+        "A_row_norm": row_normalize(A_sim, eps=1e-8),
+        "A_sym_norm": symmetry_normalize(A_sim, eps=1e-8),
+    }
+    if topk_sym:
+        out["A_topk"] = topk_row(A_sim, k=k, sym=True, eps=1e-8)
+
+    return out
+
+
+def build_dtw_graphs_from_timeseries(
+    X: torch.Tensor,
+    L: int,
+    sigma: float | None = None,
+    k: int = 5,
+    self_loops: bool = False,
+    topk_sym: bool = False,
+) -> Dict[str, torch.Tensor]:
+    """
+    Build a time series of DTW graphs for each timestep.
+
+    Parameters
+    ----------
+    X : [T, N, F] tensor
+        Multivariate time series for N nodes.
+    L : int
+        Window length used for DTW comparisons.
+    sigma : float | None
+        Gaussian kernel width.
+    k : int
+        Number of neighbors for optional top-k sparsification.
+    self_loops : bool
+        Whether to preserve self-loops.
+    topk_sym : bool
+        If True, returns symmetric top-k graphs.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        - A_dtw: [T, N, N] DTW distance matrices.
+        - A_sim: [T, N, N] similarity matrices.
+        - A_row_norm: [T, N, N] row-normalized similarities.
+        - A_sym_norm: [T, N, N] symmetric normalized similarities.
+        - A_topk: [T, N, N] sparsified graphs if `topk_sym` is True.
+    """
+    if X.ndim != 3:
+        raise ValueError("X must have shape [T, N, F].")
+    if L < 1:
+        raise ValueError("L must be a positive integer.")
+
+    T, N, F = X.shape
+    A_dtw = torch.zeros((T, N, N), device=X.device, dtype=torch.float32)
+    A_sim = torch.zeros((T, N, N), device=X.device, dtype=torch.float32)
+    A_row_norm = torch.zeros((T, N, N), device=X.device, dtype=torch.float32)
+    A_sym_norm = torch.zeros((T, N, N), device=X.device, dtype=torch.float32)
+    A_topk = torch.zeros((T, N, N), device=X.device, dtype=torch.float32) if topk_sym else None
+
+    pad_step = X[min(L - 1, T - 1)]
+    for t in range(T):
+        if t + 1 >= L:
+            window = X[t - L + 1 : t + 1]
+        else:
+            pad_count = L - (t + 1)
+            pad = pad_step.unsqueeze(0).expand(pad_count, N, F)
+            window = torch.cat([pad, X[: t + 1]], dim=0)
+
+        result = build_dtw_adjacency(
+            window.permute(1, 0, 2),
+            sigma=sigma,
+            k=k,
+            self_loops=self_loops,
+            topk_sym=topk_sym,
+        )
+        A_dtw[t] = result["A_dtw"]
+        A_sim[t] = result["A_sim"]
+        A_row_norm[t] = result["A_row_norm"]
+        A_sym_norm[t] = result["A_sym_norm"]
+        if topk_sym:
+            A_topk[t] = result["A_topk"]
+
+    output = {
+        "A_dtw": A_dtw,
+        "A_sim": A_sim,
+        "A_row_norm": A_row_norm,
+        "A_sym_norm": A_sym_norm,
+    }
+    if topk_sym:
+        output["A_topk"] = A_topk
+
+    return output
+
+
 class WindAdjacency(nn.Module):
     """
     Build A_wind(t) from static distance/bearing + time-varying wind dir/speed.
