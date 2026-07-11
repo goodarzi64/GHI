@@ -30,9 +30,9 @@ def minmax_normalize(t: torch.Tensor, dim: int = 1, eps: float = 1e-6) -> torch.
 
 
 def symmetry_normalize(A: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    d = A.sum(dim=-1)
+    d = A.sum(dim=-1, keepdim=True)
     d_inv_sqrt = torch.pow(d + eps, -0.5)
-    return d_inv_sqrt[:, None] * A * d_inv_sqrt[None, :]
+    return d_inv_sqrt * A * d_inv_sqrt.transpose(-1, -2)
 
 
 # ============================================================
