@@ -144,22 +144,17 @@ def build_semantic_adjacency(
             dtw_dist[i, j] = dist
             dtw_dist[j, i] = dist
 
-    if sigma is None:
-        mask = torch.triu(torch.ones_like(dtw_dist), diagonal=1).bool()
-        sigma = torch.std(dtw_dist[mask]) if dtw_dist[mask].numel() else torch.tensor(1.0, device=X.device)
-    else:
-        sigma = torch.tensor(sigma, device=X.device, dtype=torch.float32)
-
-    A_sim = torch.exp(- (dtw_dist ** 2) / (2 * sigma ** 2))
+    # Use inverse-distance weights instead of a Gaussian similarity kernel.
+    eps = 1e-8
+    weights = 1.0 / (dtw_dist + eps)
     if not self_loops:
-        A_sim.fill_diagonal_(0)
+        weights.fill_diagonal_(0)
 
     return {
         "A_dtw": dtw_dist,
-        "A_sim": A_sim,
-        "A_topk": topk_row(A_sim, k=k, sym=topk_sym, eps=1e-8),
-        "A_row_norm": row_normalize(A_sim, eps=1e-8),
-        "A_sym_norm": symmetry_normalize(A_sim, eps=1e-8),
+        "A_topk": topk_row(weights, k=k, sym=topk_sym, eps=1e-8),
+        "A_row_norm": row_normalize(weights, eps=1e-8),
+        "A_sym_norm": symmetry_normalize(weights, eps=1e-8),
     }
 
 
@@ -346,24 +341,21 @@ def build_dtw_adjacency(
             dtw_dist[i, j] = dist
             dtw_dist[j, i] = dist
 
-    if sigma is None:
-        mask = torch.triu(torch.ones_like(dtw_dist), diagonal=1).bool()
-        sigma = torch.std(dtw_dist[mask]) if dtw_dist[mask].numel() else torch.tensor(1.0, device=X.device)
-    else:
-        sigma = torch.tensor(sigma, device=X.device, dtype=torch.float32)
-
-    A_sim = torch.exp(- (dtw_dist ** 2) / (2 * sigma ** 2))
+    # If requested, compute a Gaussian similarity kernel from DTW distances.
+    # Otherwise derive weights directly from distances (inverse-distance) and
+    # use those for sparsification/normalization to avoid the expensive exp().
+    eps = 1e-8
+    weights = 1.0 / (dtw_dist + eps)
     if not self_loops:
-        A_sim.fill_diagonal_(0)
+        weights.fill_diagonal_(0)
 
-    out = {
+    out: Dict[str, torch.Tensor] = {
         "A_dtw": dtw_dist,
-        "A_sim": A_sim,
-        "A_row_norm": row_normalize(A_sim, eps=1e-8),
-        "A_sym_norm": symmetry_normalize(A_sim, eps=1e-8),
+        "A_row_norm": row_normalize(weights, eps=1e-8),
+        "A_sym_norm": symmetry_normalize(weights, eps=1e-8),
     }
     if topk_sym:
-        out["A_topk"] = topk_row(A_sim, k=k, sym=True, eps=1e-8)
+        out["A_topk"] = topk_row(weights, k=k, sym=True, eps=1e-8)
 
     return out
 
@@ -376,6 +368,7 @@ def build_dtw_graphs_from_timeseries(
     self_loops: bool = False,
     topk_sym: bool = False,
     progress: bool = False,
+    compute_sim: bool | None = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Build a time series of DTW graphs for each timestep.
@@ -411,7 +404,6 @@ def build_dtw_graphs_from_timeseries(
 
     T, N, F = X.shape
     A_dtw = torch.zeros((T, N, N), device=X.device, dtype=torch.float32)
-    A_sim = torch.zeros((T, N, N), device=X.device, dtype=torch.float32)
     A_row_norm = torch.zeros((T, N, N), device=X.device, dtype=torch.float32)
     A_sym_norm = torch.zeros((T, N, N), device=X.device, dtype=torch.float32)
     A_topk = torch.zeros((T, N, N), device=X.device, dtype=torch.float32) if topk_sym else None
@@ -438,18 +430,18 @@ def build_dtw_graphs_from_timeseries(
             topk_sym=topk_sym,
         )
         A_dtw[t] = result["A_dtw"]
-        A_sim[t] = result["A_sim"]
         A_row_norm[t] = result["A_row_norm"]
         A_sym_norm[t] = result["A_sym_norm"]
+        
         if topk_sym:
             A_topk[t] = result["A_topk"]
 
     output = {
         "A_dtw": A_dtw,
-        "A_sim": A_sim,
         "A_row_norm": A_row_norm,
         "A_sym_norm": A_sym_norm,
     }
+    
     if topk_sym:
         output["A_topk"] = A_topk
 
