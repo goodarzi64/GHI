@@ -8,6 +8,11 @@ import torch
 from .GST_Utils import row_normalize, symmetry_normalize, topk_row
 import torch.nn as nn
 
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - fallback for minimal environments
+    tqdm = None
+
 
 class GeoGeometry:
     def __init__(self, df_geo, device: str = "cpu") -> None:
@@ -369,6 +374,7 @@ def build_dtw_graphs_from_timeseries(
     k: int = 5,
     self_loops: bool = False,
     topk_sym: bool = False,
+    progress: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
     Build a time series of DTW graphs for each timestep.
@@ -410,7 +416,12 @@ def build_dtw_graphs_from_timeseries(
     A_topk = torch.zeros((T, N, N), device=X.device, dtype=torch.float32) if topk_sym else None
 
     pad_step = X[min(L - 1, T - 1)]
-    for t in range(T):
+    iterator = (
+        tqdm(range(T), desc="Building DTW graphs", leave=True)
+        if progress and tqdm is not None
+        else range(T)
+    )
+    for t in iterator:
         if t + 1 >= L:
             window = X[t - L + 1 : t + 1]
         else:
