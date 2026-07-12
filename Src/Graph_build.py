@@ -80,16 +80,17 @@ def dtw_distance(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     x = x.float()
     y = y.float()
 
-    D = torch.cdist(x, y, p=2)  # [W, W]
+    D = torch.cdist(x, y, p=2)  # [W1, W2]
     W1, W2 = D.shape
 
     cost = torch.full((W1 + 1, W2 + 1), float("inf"), device=D.device, dtype=D.dtype)
     cost[0, 0] = 0.0
 
     for i in range(1, W1 + 1):
-        for j in range(1, W2 + 1):
-            prev = torch.min(torch.stack([cost[i - 1, j], cost[i, j - 1], cost[i - 1, j - 1]]))
-            cost[i, j] = D[i - 1, j - 1] + prev
+        prev_row = cost[i - 1, 1:]
+        prev_col = cost[i, :-1]
+        diag = cost[i - 1, :-1]
+        cost[i, 1:] = D[i - 1, :] + torch.minimum(torch.minimum(prev_row, prev_col), diag)
 
     return cost[W1, W2]
 
