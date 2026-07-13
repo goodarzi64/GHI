@@ -1,18 +1,19 @@
 """
-Spatial GATv2 Encoder for Multi-Graph Spatio-Temporal Forecasting
+Spatial GATv2 Encoder for Multi-Graph Spatio-Temporal Forecasting.
 
-Three graph types (static, dynamic, wind) each processed by a GATv2 layer with
-edge weights applied as bias (beta * log(A)) to attention logits.
+This module defines a structural-bias variant of GATv2 that injects
+adjacency weights directly into the attention logits and two encoder
+wrappers for single-graph and batched multi-graph inputs.
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv
 from torch_geometric.utils import softmax
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 from torch import Tensor
 from torch.nn import Parameter
-from typing import Optional, Tuple, Union
 from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.nn.inits import glorot, zeros
@@ -30,24 +31,8 @@ class StructuralBiasGATv2(MessagePassing):
     """
     GATv2 with structural adjacency bias.
 
-    Attention logits:
-
-        e_ij =
-            a^T LeakyReLU(
-                W_s x_i + W_t x_j
-            )
-            + beta * log(A_ij)
-
-    Attention weights:
-
-        alpha_ij = softmax(e_ij)
-
-    where:
-        A_ij : adjacency weight in [0,1]
-        beta : learnable scalar
-
-    The adjacency does NOT pass through a learnable edge encoder.
-    It directly biases attention logits.
+    The layer computes standard GATv2 attention logits and then adds a
+    learnable bias term derived from the adjacency weights.
     """
 
     def __init__(
@@ -65,6 +50,7 @@ class StructuralBiasGATv2(MessagePassing):
     ):
         super().__init__(aggr="add", node_dim=0)
 
+        # Layer configuration
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.heads = heads
@@ -75,12 +61,11 @@ class StructuralBiasGATv2(MessagePassing):
         self.fill_value = fill_value
         self.share_weights = share_weights
 
-        # -------------------------
-        # Node projections
-        # -------------------------
-
+        # --------------------------------------------------
+        # Node input projections
+        # --------------------------------------------------
+        # Project left and right node features into the attention space.
         if isinstance(in_channels, int):
-
             self.lin_l = Linear(
                 in_channels,
                 heads * out_channels,
@@ -97,9 +82,7 @@ class StructuralBiasGATv2(MessagePassing):
                     bias=False,
                     weight_initializer="glorot",
                 )
-
         else:
-
             self.lin_l = Linear(
                 in_channels[0],
                 heads * out_channels,
@@ -117,33 +100,23 @@ class StructuralBiasGATv2(MessagePassing):
                     weight_initializer="glorot",
                 )
 
-        # Attention vector
-        self.att = Parameter(
-            torch.empty(1, heads, out_channels)
-        )
+        # Attention vector for each head
+        self.att = Parameter(torch.empty(1, heads, out_channels))
 
-        # Structural bias strength
-        self.beta = Parameter(
-            torch.ones(1)
-        )
+        # Learnable scalar controlling adjacency bias strength
+        self.beta = Parameter(torch.ones(1))
 
-        total_out_channels = (
-            heads * out_channels
-            if concat
-            else out_channels
-        )
+        total_out_channels = heads * out_channels if concat else out_channels
 
         if bias:
-            self.bias = Parameter(
-                torch.empty(total_out_channels)
-            )
+            self.bias = Parameter(torch.empty(total_out_channels))
         else:
             self.register_parameter("bias", None)
 
         self.reset_parameters()
 
     def reset_parameters(self):
-
+        """Initialize weights and bias parameters."""
         self.lin_l.reset_parameters()
 
         if self.lin_r is not self.lin_l:
@@ -161,27 +134,28 @@ class StructuralBiasGATv2(MessagePassing):
         edge_index: Adj,
         edge_weight: Optional[Tensor] = None,
     ):
+        """Forward pass through the structurally biased GATv2 layer."""
 
         H = self.heads
         C = self.out_channels
 
+        # --------------------------------------------------
+        # Project node features into attention space
+        # --------------------------------------------------
         if isinstance(x, Tensor):
-
             x_l = self.lin_l(x).view(-1, H, C)
-
             if self.share_weights:
                 x_r = x_l
             else:
                 x_r = self.lin_r(x).view(-1, H, C)
-
         else:
-
             x_l, x_r = x
-
             x_l = self.lin_l(x_l).view(-1, H, C)
             x_r = self.lin_r(x_r).view(-1, H, C)
 
-
+        # --------------------------------------------------
+        # Compute attention coefficients and propagate
+        # --------------------------------------------------
         alpha = self.edge_updater(
             edge_index,
             x=(x_l, x_r),
@@ -194,11 +168,11 @@ class StructuralBiasGATv2(MessagePassing):
             alpha=alpha,
         )
 
+        # --------------------------------------------------
+        # Merge multi-head outputs
+        # --------------------------------------------------
         if self.concat:
-            out = out.view(
-                -1,
-                H * C,
-            )
+            out = out.view(-1, H * C)
         else:
             out = out.mean(dim=1)
 
@@ -216,70 +190,32 @@ class StructuralBiasGATv2(MessagePassing):
         ptr: OptTensor,
         dim_size: Optional[int],
     ) -> Tensor:
-        """
-        Compute attention coefficients:
-
-            e_ij =
-                a^T LeakyReLU(W_s x_i + W_t x_j)
-                + beta * (log(A_ij) - mu_log)
-
-        where
-
-            mu_log = mean(log(A))
-
-        over all existing edges.
-
-        This makes edges stronger than the graph geometric mean
-        receive positive bias and weaker edges receive negative bias.
-        """
+        """Compute the attention weights for each edge."""
 
         # --------------------------------------------------
         # Standard GATv2 attention logits
         # --------------------------------------------------
         x = x_i + x_j
-
-        x = F.leaky_relu(
-            x,
-            negative_slope=self.negative_slope,
-        )
-
+        x = F.leaky_relu(x, negative_slope=self.negative_slope)
         logits = (x * self.att).sum(dim=-1)
 
         # --------------------------------------------------
-        # Structural bias
-        # b_ij = beta * (log(A_ij) - mu_log)
+        # Structural adjacency bias
+        # Add a learnable term based on log(A_ij) centered by the mean.
         # --------------------------------------------------
         if edge_weight is not None:
-
             edge_weight = edge_weight.clamp(min=1e-8)
-
             log_edge_weight = torch.log(edge_weight)
-
-            # global mean over existing edges
             mu_log = log_edge_weight.mean()
 
-            bias_term = self.beta * (
-                log_edge_weight - mu_log
-            )
-
+            bias_term = self.beta * (log_edge_weight - mu_log)
             logits = logits + bias_term.unsqueeze(-1)
 
         # --------------------------------------------------
-        # Neighborhood normalization
+        # Normalize attention logits across each node's neighbors
         # --------------------------------------------------
-        alpha = softmax(
-            logits,
-            index,
-            ptr,
-            dim_size,
-        )
-
-        alpha = F.dropout(
-            alpha,
-            p=self.dropout,
-            training=self.training,
-        )
-
+        alpha = softmax(logits, index, ptr, dim_size)
+        alpha = F.dropout(alpha, p=self.dropout, training=self.training)
         return alpha
 
     def message(
@@ -287,11 +223,10 @@ class StructuralBiasGATv2(MessagePassing):
         x_j: Tensor,
         alpha: Tensor,
     ) -> Tensor:
-
+        """Message function for propagation: scale source node features by attention."""
         return x_j * alpha.unsqueeze(-1)
 
     def __repr__(self):
-
         return (
             f"{self.__class__.__name__}("
             f"{self.in_channels}, "
@@ -303,13 +238,12 @@ class StructuralBiasGATv2(MessagePassing):
 
 class SpatialGATv2Encoder(nn.Module):
     """
-    Multi-graph spatial encoder processing 3 graph types (static, dynamic, wind)
-    separately via StructuralBiasGATv2 layers, producing node embeddings per graph.
-    
-    Input: Node features [N, in_features]
-    Output: Embeddings [N, out_features] per graph (total 3 embeddings)
+    Multi-graph spatial encoder using separate StructuralBiasGATv2 layers.
+
+    Each of the three graph types (static, dynamic, wind) is encoded
+    independently and returns a list of graph-specific embeddings.
     """
-    
+
     def __init__(
         self,
         in_features: int,
@@ -320,12 +254,14 @@ class SpatialGATv2Encoder(nn.Module):
         use_bias_scaling: bool = True,
     ):
         super().__init__()
+
+        # Encoder configuration
         self.in_features = in_features
         self.out_features = out_features
         self.n_graphs = n_graphs  # static, dynamic, wind
         self.use_bias_scaling = use_bias_scaling
-        
-        # One StructuralBiasGATv2 encoder per graph type
+
+        # Create one SpatialGATv2 encoder per graph type
         self.encoders = nn.ModuleList([
             StructuralBiasGATv2(
                 in_features,
@@ -348,32 +284,27 @@ class SpatialGATv2Encoder(nn.Module):
         edge_weights: list,
     ) -> list:
         """
-        Process node features through separate GATv2 for each graph.
-        
-        Args:
-            x: Node features [N, in_features]
-            edge_indices: List of 3 edge_index tensors (static, dynamic, wind)
-            edge_weights: List of 3 edge_weight tensors (one per graph)
-        
-        Returns:
-            List of 3 embeddings [N, out_features] per graph type
+        Forward pass for the multi-graph encoder.
+
+        Each graph encoder receives the same node feature matrix but different
+        adjacency information, producing separate embeddings for each graph.
         """
         embeddings = []
         for i, encoder in enumerate(self.encoders):
             emb = encoder(x, edge_indices[i], edge_weights[i] if edge_weights[i] is not None else None)
             embeddings.append(emb)
-        
+
         return embeddings
 
 
 class SpatialGATv2EncoderBatched(nn.Module):
     """
-    Batched version processing [B, N, F_in] inputs where B is batch size,
-    N is number of nodes, F_in is feature dimension.
-    
-    Returns batched embeddings [B, N, F_out] per graph type.
+    Batched spatial encoder for inputs shaped [B, N, F_in].
+
+    This wrapper flattens the batch dimension for the GATv2 encoders and
+    reconstructs batched embeddings after propagation.
     """
-    
+
     def __init__(
         self,
         in_features: int,
@@ -386,7 +317,7 @@ class SpatialGATv2EncoderBatched(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.n_graphs = n_graphs
-        
+
         # One StructuralBiasGATv2 encoder per graph type
         self.encoders = nn.ModuleList([
             StructuralBiasGATv2(
@@ -410,38 +341,29 @@ class SpatialGATv2EncoderBatched(nn.Module):
         edge_weights: list,
     ) -> list:
         """
-        Process batched inputs through GATv2 encoders.
-        
-        Args:
-            x_batch: Batched node features [B, N, in_features]
-            edge_indices: List of 3 edge_index tensors (same for all batches)
-            edge_weights: List of 3 edge_weight tensors [B, N, N]
-        
-        Returns:
-            List of 3 batched embeddings [B, N, out_features]
+        Process batched node features through the graph encoders.
+
+        The batch dimension is flattened for propagation, then reshaped back
+        into [B, N, out_features] after the attention update.
         """
         B, N, F_in = x_batch.shape
         embeddings = []
-        
+
         for i, encoder in enumerate(self.encoders):
-            # Reshape batch to [B*N, F_in]
+            # Flatten batch for the graph operation
             x_flat = x_batch.reshape(B * N, F_in)
-            
-            # Edge weights: [B, N, N] -> sparse format per batch
-            # For simplicity, use edge weights from first batch (or average)
+
             edge_weight_i = edge_weights[i]
             if edge_weight_i is not None:
-                if edge_weight_i.dim() == 3:  # [B, N, N]
-                    # Take weights from first batch as representative
+                if edge_weight_i.dim() == 3:  # Batched edge weights [B, N, N]
                     edge_weight_flat = edge_weight_i[0].flatten()
-                else:  # [N, N]
+                else:  # Shared edge weights [N, N]
                     edge_weight_flat = edge_weight_i.flatten()
             else:
                 edge_weight_flat = None
-            
-            # Forward pass
-            emb_flat = encoder(x_flat, edge_indices[i], edge_weight_flat)  # [B*N, F_out]
-            emb_batch = emb_flat.reshape(B, N, -1)  # [B, N, F_out]
+
+            emb_flat = encoder(x_flat, edge_indices[i], edge_weight_flat)
+            emb_batch = emb_flat.reshape(B, N, -1)
             embeddings.append(emb_batch)
-        
+
         return embeddings
