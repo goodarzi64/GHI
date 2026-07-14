@@ -75,7 +75,8 @@ class TemporalConvModule(nn.Module):
         super().__init__()
         self.node_feature_dim = node_feature_dim
         self.hidden_dim = hidden_dim
-        self.output_dim = output_dim or hidden_dim
+        # projection removed: output dimension equals hidden_dim
+        self.output_dim = self.hidden_dim
         self.dilation_list = dilation_list or [1, 2, 4, 8]
         self.num_layers = len(self.dilation_list)
         self.kernel_size = kernel_size
@@ -88,12 +89,6 @@ class TemporalConvModule(nn.Module):
             )
             in_channels = self.hidden_dim
 
-        self.projection = nn.Sequential(
-            nn.Linear(hidden_dim, self.output_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(self.output_dim, self.output_dim),
-        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Process [B, W, N, F_in] into [B, W, N, D]."""
@@ -111,10 +106,8 @@ class TemporalConvModule(nn.Module):
         # Restore [B, W, N, hidden_dim].
         x_flat = x_flat.reshape(B, N, self.hidden_dim, W).permute(0, 3, 1, 2)
 
-        # Project each node-time feature vector to the desired output dimension.
-        x_flat = x_flat.reshape(B * W * N, self.hidden_dim)
-        x_flat = self.projection(x_flat)
-        x_flat = x_flat.reshape(B, W, N, self.output_dim)
+        # Return node-time feature vectors with hidden dimension.
+        x_flat = x_flat.reshape(B, W, N, self.hidden_dim)
         return x_flat
 
 
