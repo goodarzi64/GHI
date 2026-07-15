@@ -67,7 +67,6 @@ class TemporalConvModule(nn.Module):
         self,
         node_feature_dim: int,
         hidden_dim: int = 64,
-        output_dim: Optional[int] = None,
         dilation_list: Optional[List[int]] = None,
         kernel_size: int = 3,
         dropout: float = 0.1,
@@ -75,8 +74,6 @@ class TemporalConvModule(nn.Module):
         super().__init__()
         self.node_feature_dim = node_feature_dim
         self.hidden_dim = hidden_dim
-        # projection removed: output dimension equals hidden_dim
-        self.output_dim = self.hidden_dim
         self.dilation_list = dilation_list or [1, 2, 4, 8]
         self.num_layers = len(self.dilation_list)
         self.kernel_size = kernel_size
@@ -117,7 +114,6 @@ if __name__ == '__main__':
     module = TemporalConvModule(
         node_feature_dim=F_in,
         hidden_dim=64,
-        output_dim=64,
         dilation_list=[1, 2, 4, 8],
         kernel_size=3,
         dropout=0.1,
