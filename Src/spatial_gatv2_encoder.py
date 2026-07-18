@@ -4,6 +4,12 @@ Spatial GATv2 Encoder for Multi-Graph Spatio-Temporal Forecasting.
 This module defines a structural-bias variant of GATv2 that injects
 adjacency weights directly into the attention logits and two encoder
 wrappers for single-graph and batched multi-graph inputs.
+
+Input and output dimensionality:
+- Single-graph encoder: expects node features of shape [N, F_in] and returns
+  embeddings of shape [N, F_out].
+- Batched encoder: expects node features of shape [B, N, F_in] and returns
+  embeddings of shape [B, N, F_out].
 """
 
 import torch

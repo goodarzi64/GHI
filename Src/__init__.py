@@ -10,6 +10,23 @@ from .Graph_build import (
     build_dtw_graphs_from_timeseries,
     WindAdjacency,
 )
+from .data_splits import (
+    SplitArrays,
+    TemporalFold,
+    WindowedFold,
+    WindowedSplit,
+    build_windowed_folds,
+    build_windowed_split,
+    describe_folds,
+    infer_n_timesteps,
+    load_graph_arrays,
+    load_drive_artifacts,
+    load_windowed_drive_folds,
+    make_expanding_folds,
+    make_three_year_folds,
+    resolve_mask,
+    split_drive_artifacts,
+)
 
 __all__ = [
     "GeoGeometry",
@@ -22,4 +39,19 @@ __all__ = [
     "build_dtw_adjacency",
     "build_dtw_graphs_from_timeseries",
     "WindAdjacency",
+    "SplitArrays",
+    "TemporalFold",
+    "WindowedFold",
+    "WindowedSplit",
+    "build_windowed_folds",
+    "build_windowed_split",
+    "describe_folds",
+    "infer_n_timesteps",
+    "load_graph_arrays",
+    "load_drive_artifacts",
+    "load_windowed_drive_folds",
+    "make_expanding_folds",
+    "make_three_year_folds",
+    "resolve_mask",
+    "split_drive_artifacts",
 ]
