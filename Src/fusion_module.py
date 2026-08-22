@@ -66,41 +66,6 @@ class AttentionFusion(nn.Module):
         return fused, alpha
 
 
-class ConcatFusion(nn.Module):
-    """
-    Concatenation-based fusion with projection.
-    
-    Concatenates embeddings from all graphs and projects to target dimension.
-    """
-    
-    def __init__(self, embedding_dim: int, n_graphs: int = 3, dropout: float = 0.1):
-        super().__init__()
-        self.embedding_dim = embedding_dim
-        self.n_graphs = n_graphs
-        
-        # Project from [n_graphs * embedding_dim] back to [embedding_dim]
-        self.projection = nn.Sequential(
-            nn.Linear(n_graphs * embedding_dim, embedding_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(embedding_dim, embedding_dim),
-        )
-    
-    def forward(self, embeddings: List[torch.Tensor]) -> torch.Tensor:
-        """
-        Fuse by concatenation and projection.
-        
-        Args:
-            embeddings: List of G embeddings, each [N, F] or [B, N, F]
-        
-        Returns:
-            Fused embedding [N, F] or [B, N, F]
-        """
-        concat = torch.cat(embeddings, dim=-1)
-        fused = self.projection(concat)
-        return fused
-
-
 class LearnedWeightFusion(nn.Module):
     """
     Learnable fixed weights for each graph (simpler than attention).
@@ -134,14 +99,14 @@ class SpatialFusionModule(nn.Module):
     Complete fusion module that combines embeddings from three GATv2 encoders
     (static, semantic, wind graph types).
     
-    Supports multiple fusion strategies: attention, concatenation, or learned weights.
+    Supports multiple fusion strategies: attention or learned weights.
     """
     
     def __init__(
         self,
         embedding_dim: int,
         n_graphs: int = 3,
-        fusion_method: str = 'attention',  # 'attention', 'concat', 'learned'
+        fusion_method: str = 'attention',  # 'attention', 'learned'
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -151,8 +116,6 @@ class SpatialFusionModule(nn.Module):
         
         if fusion_method == 'attention':
             self.fusion = AttentionFusion(embedding_dim, n_graphs, dropout)
-        elif fusion_method == 'concat':
-            self.fusion = ConcatFusion(embedding_dim, n_graphs, dropout)
         elif fusion_method == 'learned':
             self.fusion = LearnedWeightFusion(n_graphs)
         else:
@@ -245,7 +208,7 @@ def create_fusion_module(
     Args:
         embedding_dim: Dimension of embeddings to fuse
         n_graphs: Number of graphs / embeddings
-        fusion_type: 'attention', 'concat', 'learned', 'multiscale'
+        fusion_type: 'attention', 'learned', 'multiscale'
         **kwargs: Additional arguments passed to the module
     
     Returns:

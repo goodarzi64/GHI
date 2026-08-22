@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class TemporalGraphStateAggregator(nn.Module):
@@ -223,54 +224,209 @@ class HorizonAwareMultiGraphAPPNP(nn.Module):
         return h
 
 
-class ForecastHead(nn.Module):
-    """Simple linear forecast head for horizon-specific GHI prediction."""
+class CurrentStateRefinement(nn.Module):
+    """Refine the current latent state before future graph propagation."""
 
-    def __init__(self, channels: int, num_horizons: int = 1, horizon_emb_dim: int | None = None):
+    def __init__(self, channels: int, hidden_dim: int | None = None, dropout: float = 0.1):
+        super().__init__()
+        self.channels = channels
+        hidden_dim = 4 * channels if hidden_dim is None else hidden_dim
+
+        self.norm = nn.LayerNorm(channels)
+        self.proj_in = nn.Linear(channels, hidden_dim)
+        self.act = nn.GELU()
+        self.drop = nn.Dropout(dropout)
+        self.proj_out = nn.Linear(hidden_dim, channels)
+
+    def forward(self, z_current: torch.Tensor) -> torch.Tensor:
+        """Refine [B, N, C] into a propagation-ready state [B, N, C]."""
+        if z_current.dim() != 3:
+            raise ValueError(f"Expected current state [B, N, C], got {tuple(z_current.shape)}")
+
+        residual = z_current
+        x = self.norm(z_current)
+        x = self.proj_in(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.proj_out(x)
+        return residual + x
+
+
+class FutureSpatialDependencyGenerator(nn.Module):
+    """Predict graph residuals for wind and semantic graphs from graph evolution contexts."""
+
+    def __init__(self, latent_dim: int, hidden_dim: int | None = None, residual_scale: float = 0.1):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.residual_scale = residual_scale
+        hidden_dim = 2 * latent_dim if hidden_dim is None else hidden_dim
+
+        self.wind_mlp = nn.Sequential(
+            nn.Linear(latent_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.0),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+        self.sem_mlp = nn.Sequential(
+            nn.Linear(latent_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.0),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+
+    def _pairwise_features(self, z_graph: torch.Tensor, node_idx: torch.Tensor) -> torch.Tensor:
+        src = z_graph[:, :, node_idx[0], :]
+        dst = z_graph[:, :, node_idx[1], :]
+        return torch.cat([src, dst], dim=-1)
+
+    def _predict_residuals(self, z_graph: torch.Tensor, current_adj: torch.Tensor, mlp: nn.Module) -> torch.Tensor:
+        if z_graph.dim() != 4:
+            raise ValueError(f"Expected z_graph [B, H, N, C], got {tuple(z_graph.shape)}")
+
+        batch_size, num_horizons, num_nodes, _ = z_graph.shape
+        node_idx = torch.arange(num_nodes, device=z_graph.device)
+        src_idx = node_idx.unsqueeze(1).expand(-1, num_nodes)
+        dst_idx = node_idx.unsqueeze(0).expand(num_nodes, -1)
+        edge_idx = torch.stack([src_idx.reshape(-1), dst_idx.reshape(-1)], dim=0)
+
+        edge_features = self._pairwise_features(z_graph, edge_idx)
+        residuals = mlp(edge_features)
+        residuals = residuals.view(batch_size, num_horizons, num_nodes, num_nodes, self.latent_dim)
+        residuals = residuals.mean(dim=-1)
+        residuals = residuals * self.residual_scale
+
+        current_adj = current_adj.unsqueeze(1).expand(-1, num_horizons, -1, -1)
+        return current_adj + residuals
+
+    def forward(
+        self,
+        z_graph: torch.Tensor,
+        a_wind_current: torch.Tensor,
+        a_sem_current: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Predict residual-adjusted future wind and semantic graphs."""
+        if z_graph.dim() != 4:
+            raise ValueError(f"Expected z_graph [B, H, N, C], got {tuple(z_graph.shape)}")
+
+        a_wind_hat = self._predict_residuals(z_graph, a_wind_current, self.wind_mlp)
+        a_sem_hat = self._predict_residuals(z_graph, a_sem_current, self.sem_mlp)
+        return a_wind_hat, a_sem_hat
+
+
+class HorizonAwarePropagationGate(nn.Module):
+    """Learn node-wise, feature-wise gates for fusing multi-graph messages."""
+
+    def __init__(self, channels: int, horizon_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.channels = channels
+        self.horizon_dim = horizon_dim
+        self.net = nn.Sequential(
+            nn.Linear(channels + horizon_dim, 2 * channels),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(2 * channels, 3 * channels),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, h: torch.Tensor, horizon_emb: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return gates [g_phys, g_wind, g_sem] with shape [B, N, C]."""
+        if h.dim() != 3:
+            raise ValueError(f"Expected hidden state [B, N, C], got {tuple(h.shape)}")
+
+        h_in = torch.cat([h, horizon_emb.unsqueeze(1).expand(-1, h.shape[1], -1)], dim=-1)
+        gates = self.net(h_in)
+        g_phys, g_wind, g_sem = torch.chunk(gates, 3, dim=-1)
+        return g_phys, g_wind, g_sem
+
+
+class MultiGraphAdaptivePropagation(nn.Module):
+    """Propagate a single shared hidden state over future graph views for each horizon."""
+
+    def __init__(self, channels: int, num_horizons: int, propagation_steps: int = 3, alpha: float = 0.1, dropout: float = 0.1):
         super().__init__()
         self.channels = channels
         self.num_horizons = num_horizons
-        self.horizon_emb_dim = channels if horizon_emb_dim is None else horizon_emb_dim
+        self.propagation_steps = propagation_steps
+        self.alpha = alpha
+        self.dropout = nn.Dropout(dropout)
 
-        if self.num_horizons > 1:
-            self.horizon_embeddings = nn.Embedding(self.num_horizons, self.horizon_emb_dim)
-        else:
-            self.horizon_embeddings = nn.Parameter(torch.zeros(1, self.horizon_emb_dim))
+        self.horizon_embeddings = nn.Parameter(torch.randn(num_horizons, channels))
+        self.gate = HorizonAwarePropagationGate(channels, channels)
 
-        self.proj = nn.Linear(channels + self.horizon_emb_dim, 1)
+    def _normalise_adjacency(self, adj: torch.Tensor) -> torch.Tensor:
+        if adj.dim() != 3:
+            raise ValueError(f"Expected adjacency [B, N, N], got {tuple(adj.shape)}")
+        denom = adj.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+        return adj / denom
 
-    def _get_horizon_embedding(self, batch_size: int, device: torch.device, horizon_idx: int | torch.Tensor | None) -> torch.Tensor:
-        if isinstance(self.horizon_embeddings, nn.Parameter):
-            return self.horizon_embeddings.expand(batch_size, -1).to(device)
+    def forward(
+        self,
+        z_refined: torch.Tensor,
+        a_phys: torch.Tensor,
+        a_wind_hat: torch.Tensor,
+        a_sem_hat: torch.Tensor,
+    ) -> torch.Tensor:
+        """Propagate [B, N, C] state over [B, H, N, N] future graphs.
 
-        if horizon_idx is None:
-            horizon_idx = torch.zeros(batch_size, dtype=torch.long, device=device)
-        elif isinstance(horizon_idx, int):
-            horizon_idx = torch.full((batch_size,), horizon_idx, dtype=torch.long, device=device)
-        else:
-            horizon_idx = horizon_idx.to(device)
-            if horizon_idx.dim() == 0:
-                horizon_idx = horizon_idx.unsqueeze(0).expand(batch_size)
-            elif horizon_idx.shape[0] != batch_size:
-                horizon_idx = horizon_idx[:batch_size]
+        Returns:
+            [B, H, N, C]
+        """
+        if z_refined.dim() != 3:
+            raise ValueError(f"Expected refined state [B, N, C], got {tuple(z_refined.shape)}")
+        if a_wind_hat.dim() != 4 or a_sem_hat.dim() != 4:
+            raise ValueError(f"Expected future graph tensors [B, H, N, N], got {tuple(a_wind_hat.shape)} and {tuple(a_sem_hat.shape)}")
 
-        return self.horizon_embeddings(horizon_idx)
+        batch_size, num_nodes, channels = z_refined.shape
+        horizon_emb = self.horizon_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
+        a_phys_norm = self._normalise_adjacency(a_phys.unsqueeze(0).expand(batch_size, -1, -1))
 
-    def forward(self, state: torch.Tensor, horizon_idx: int | torch.Tensor | None = None) -> torch.Tensor:
-        """Map propagated state [B, N, C] to predictions [B, H, N]."""
-        if state.dim() != 3:
-            raise ValueError(f"Expected state [B, N, C], got {tuple(state.shape)}")
+        outputs = []
+        for horizon_idx in range(self.num_horizons):
+            h = z_refined
+            h0 = z_refined
+            a_wind_h = self._normalise_adjacency(a_wind_hat[:, horizon_idx, :, :])
+            a_sem_h = self._normalise_adjacency(a_sem_hat[:, horizon_idx, :, :])
+            for _ in range(self.propagation_steps):
+                g_phys, g_wind, g_sem = self.gate(h, horizon_emb[:, horizon_idx, :])
 
-        batch_size, num_nodes, _ = state.shape
-        horizon_emb = self._get_horizon_embedding(batch_size, state.device, horizon_idx)
-        horizon_emb = horizon_emb.unsqueeze(1).expand(-1, num_nodes, -1)
+                m_phys = torch.einsum('bni,bnc->bic', a_phys_norm, h)
+                m_wind = torch.einsum('bni,bnc->bic', a_wind_h, h)
+                m_sem = torch.einsum('bni,bnc->bic', a_sem_h, h)
 
-        feats = torch.cat([state, horizon_emb], dim=-1)
-        logits = self.proj(feats).squeeze(-1)  # [B, N]
-        if isinstance(horizon_idx, torch.Tensor) and horizon_idx.dim() > 0 and horizon_idx.shape[0] == batch_size:
-            return logits.unsqueeze(1).expand(-1, self.num_horizons, -1)
+                m = g_phys * m_phys + g_wind * m_wind + g_sem * m_sem
+                h = (1.0 - self.alpha) * m + self.alpha * h0
+                h = self.dropout(h)
 
-        return logits.unsqueeze(1).expand(-1, self.num_horizons, -1)
+            outputs.append(h)
+
+        return torch.stack(outputs, dim=1)
+
+
+class ForecastHead(nn.Module):
+    """Lightweight regression head for horizon-wise node forecasts."""
+
+    def __init__(self, channels: int, hidden_dim: int | None = None, dropout: float = 0.1):
+        super().__init__()
+        hidden_dim = 2 * channels if hidden_dim is None else hidden_dim
+        self.norm = nn.LayerNorm(channels)
+        self.proj_in = nn.Linear(channels, hidden_dim)
+        self.act = nn.GELU()
+        self.drop = nn.Dropout(dropout)
+        self.proj_out = nn.Linear(hidden_dim, 1)
+
+    def forward(self, h_final: torch.Tensor) -> torch.Tensor:
+        """Map [B, H, N, C] to [B, H, N]."""
+        if h_final.dim() != 4:
+            raise ValueError(f"Expected propagated states [B, H, N, C], got {tuple(h_final.shape)}")
+
+        x = self.norm(h_final)
+        batch_size, num_horizons, num_nodes, channels = h_final.shape
+        x = x.reshape(batch_size * num_horizons * num_nodes, channels)
+        x = self.proj_in(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.proj_out(x).squeeze(-1)
+        return x.reshape(batch_size, num_horizons, num_nodes)
 
 
 class ForecastAndGraphLoss(nn.Module):
