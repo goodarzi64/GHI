@@ -84,7 +84,6 @@ class StructuralBiasGATv2(MessagePassing):
             )
 
         self.att = Parameter(torch.empty(1, heads, out_channels))
-        self.beta = Parameter(torch.ones(1))
 
         total_out_channels = heads * out_channels if concat else out_channels
         if bias:
@@ -100,8 +99,6 @@ class StructuralBiasGATv2(MessagePassing):
             self.lin_r.reset_parameters()
         glorot(self.att)
         zeros(self.bias)
-        with torch.no_grad():
-            self.beta.fill_(1.0)
 
     def forward(
         self,
@@ -173,8 +170,9 @@ class StructuralBiasGATv2(MessagePassing):
             mu = mu / counts.clamp_min(1)
 
             if graph_beta is None:
-                graph_beta = self.beta
+                graph_beta = 1.0
 
+            graph_beta = torch.as_tensor(graph_beta, device=log_edge_weight.device, dtype=log_edge_weight.dtype)
             bias_term = graph_beta * (log_edge_weight - mu[index])
             logits = logits + bias_term.unsqueeze(-1)
 

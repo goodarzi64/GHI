@@ -8,23 +8,23 @@ into a single unified spatial representation via learned fusion weights.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Optional, Tuple
+from typing import List
 
 
-class AttentionFusion(nn.Module):
+class NodeAdaptiveMultiGraphFusion(nn.Module):
     """
-    Attention-based fusion of multi-graph embeddings.
-    
-    Learns context-aware importance weights for each graph type.
-    Instead of scoring each embedding independently, the gate first sees
-    the full concatenation of all graph embeddings per node.
+    Node-adaptive attention fusion for multi-graph embeddings.
+
+    Learns context-aware, node-wise importance weights for each graph type.
+    The temperature parameter is learnable but reparameterized via softplus
+    to ensure it is always positive and numerically stable.
     """
-    
+
     def __init__(self, embedding_dim: int, n_graphs: int = 3, dropout: float = 0.1):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.n_graphs = n_graphs
-        
+
         joint_input_dim = embedding_dim * n_graphs
         hidden_dim = max(embedding_dim // 2, n_graphs)
 
@@ -35,19 +35,20 @@ class AttentionFusion(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, n_graphs),
         )
-        
-        # Optional: learnable temperature for controlling focus
+
+        # Learnable raw temperature parameter (reparameterized with softplus)
         self.temperature = nn.Parameter(torch.tensor(1.0))
-    
+        self._min_temperature = 1e-3
+
     def forward(self, embeddings: List[torch.Tensor]) -> torch.Tensor:
         """
         Fuse multi-graph embeddings via attention weights.
-        
+
         Args:
             embeddings: List of G embeddings, each [N, F] or [B, N, F]
-        
+
         Returns:
-            Fused embedding [N, F] or [B, N, F]
+            (fused, alpha): fused embedding and attention weights
         """
         if len(embeddings) != self.n_graphs:
             raise ValueError(f"Expected {self.n_graphs} embeddings, got {len(embeddings)}")
@@ -55,14 +56,15 @@ class AttentionFusion(nn.Module):
         # Joint context: each graph sees the others before scoring.
         joint = torch.cat(embeddings, dim=-1)  # [N, G*F] or [B, N, G*F]
         scores = self.attention(joint)  # [N, G] or [B, N, G]
-        
-        alpha = F.softmax(scores / self.temperature, dim=-1)
-        
+
+        temp = F.softplus(self.temperature) + self._min_temperature
+        alpha = F.softmax(scores / temp, dim=-1)
+
         # Weighted sum
         fused = torch.zeros_like(embeddings[0])
         for i, emb in enumerate(embeddings):
             fused = fused + alpha[..., i:i+1] * emb
-        
+
         return fused, alpha
 
 
@@ -115,7 +117,7 @@ class SpatialFusionModule(nn.Module):
         self.fusion_method = fusion_method
         
         if fusion_method == 'attention':
-            self.fusion = AttentionFusion(embedding_dim, n_graphs, dropout)
+            self.fusion = NodeAdaptiveMultiGraphFusion(embedding_dim, n_graphs, dropout)
         elif fusion_method == 'learned':
             self.fusion = LearnedWeightFusion(n_graphs)
         else:
@@ -146,54 +148,7 @@ class SpatialFusionModule(nn.Module):
             return self.fusion(embeddings)
 
 
-class MultiScaleFusion(nn.Module):
-    """
-    Multi-scale fusion: applies fusion at multiple spatial scales,
-    then combines results.
-    
-    Useful when embeddings have different scales or when hierarchical
-    fusion is desired.
-    """
-    
-    def __init__(
-        self,
-        embedding_dim: int,
-        n_graphs: int = 3,
-        n_scales: int = 2,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.embedding_dim = embedding_dim
-        self.n_graphs = n_graphs
-        self.n_scales = n_scales
-        
-        # One fusion module per scale
-        self.fusions = nn.ModuleList([
-            SpatialFusionModule(embedding_dim, n_graphs, 'attention', dropout)
-            for _ in range(n_scales)
-        ])
-        
-        # Final scale aggregation
-        self.scale_fusion = SpatialFusionModule(embedding_dim, n_scales, 'learned', dropout)
-    
-    def forward(self, embeddings: List[torch.Tensor]) -> torch.Tensor:
-        """
-        Apply multi-scale fusion.
-        
-        Args:
-            embeddings: List of G embeddings
-        
-        Returns:
-            Multi-scale fused embedding
-        """
-        scale_outputs = []
-        for fusion in self.fusions:
-            out = fusion(embeddings)
-            scale_outputs.append(out)
-        
-        # Fuse across scales
-        final = self.scale_fusion(scale_outputs)
-        return final
+# MultiScaleFusion removed — use SpatialFusionModule directly with desired method
 
 
 def create_fusion_module(
@@ -214,7 +169,6 @@ def create_fusion_module(
     Returns:
         Initialized fusion module
     """
-    if fusion_type == 'multiscale':
-        return MultiScaleFusion(embedding_dim, n_graphs, **kwargs)
-    else:
-        return SpatialFusionModule(embedding_dim, n_graphs, fusion_type, **kwargs)
+    if fusion_type not in ('attention', 'learned'):
+        raise ValueError(f"Unknown fusion_type: {fusion_type}. Supported: 'attention', 'learned'.")
+    return SpatialFusionModule(embedding_dim, n_graphs, fusion_type, **kwargs)

@@ -22,6 +22,7 @@ def test_shared_multigraph_gatv2_has_single_encoder_and_graph_specific_biases():
 
     assert hasattr(encoder, 'gat')
     assert hasattr(encoder, 'graph_betas')
+    assert not hasattr(encoder.gat, 'beta')
     assert encoder.gat.lin_l is encoder.gat.lin_r
     assert encoder.graph_betas.shape == (3,)
 
