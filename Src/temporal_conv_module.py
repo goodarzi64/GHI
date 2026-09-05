@@ -10,8 +10,8 @@ The expected input is [B, T, N, C], where:
 - C is the embedding dimension.
 
 Each station is processed independently along the temporal dimension.
-The implementation uses residual temporal blocks with dilated 1D convolutions
-and stride-2 downsampling so the sequence length is progressively compressed.
+    The implementation uses residual temporal blocks with dilated 1D convolutions
+    and stride-2 average-pooling downsampling so the sequence length is progressively compressed.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from typing import Optional, List
 
 
 class TemporalResidualBlock(nn.Module):
-    """A residual temporal block with two dilated Conv1D layers and stride-2 downsampling."""
+    """A residual temporal block with two dilated Conv1D layers and stride-2 average-pooling downsampling."""
 
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int, dilation: int, dropout: float = 0.1):
         super().__init__()
@@ -129,7 +129,7 @@ class TemporalContextEncoder(nn.Module):
         self.blocks = nn.ModuleList()
         channels = in_channels
         for idx in range(num_blocks):
-            block_out_channels = self.out_channels if idx == num_blocks - 1 else self.out_channels
+            block_out_channels = self.out_channels
             self.blocks.append(
                 TemporalResidualBlock(
                     in_channels=channels,
@@ -169,10 +169,12 @@ class TemporalContextEncoder(nn.Module):
         x_flat = self._reshape_for_temporal_conv(x)
 
         for block in self.blocks:
+            # Prevent applying AvgPool1d(kernel_size=2, stride=2) to sequences of length 1
+            if time_len < 2:
+                break
+
             x_flat = block(x_flat)
             time_len = time_len // 2
-            if time_len < 1:
-                break
 
         return self._reshape_back(x_flat, batch_size, num_nodes, time_len)
 
