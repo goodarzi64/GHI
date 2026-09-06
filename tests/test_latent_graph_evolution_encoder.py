@@ -13,7 +13,6 @@ def test_lgee_shapes_and_finite_values():
     encoder = LatentGraphEvolutionEncoder(
         latent_dim=8,
         num_horizons=3,
-        num_heads=2,
         dropout=0.0,
         ff_hidden_dim=16,
     )

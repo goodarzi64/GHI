@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class FeedForwardNetwork(nn.Module):
@@ -48,21 +47,17 @@ class FeedForwardNetwork(nn.Module):
         return self.net(x)
 
 
-class MultiHeadCrossAttention(nn.Module):
-    """Vectorized multi-head cross-attention over the temporal dimension.
+class CrossAttention(nn.Module):
+    """Single-head scaled dot-product cross-attention over the temporal dimension.
 
     Queries come from horizon embeddings and keys/values come from the historical
-    latent trajectory. The operation is applied independently per node.
+    latent trajectory. The operation is applied independently per node. This
+    simplified implementation uses a single attention head.
     """
 
-    def __init__(self, latent_dim: int, num_heads: int, dropout: float = 0.1):
+    def __init__(self, latent_dim: int, dropout: float = 0.1):
         super().__init__()
-        if latent_dim % num_heads != 0:
-            raise ValueError("latent_dim must be divisible by num_heads")
-
         self.latent_dim = latent_dim
-        self.num_heads = num_heads
-        self.head_dim = latent_dim // num_heads
         self.dropout = nn.Dropout(dropout)
 
         self.q_proj = nn.Linear(latent_dim, latent_dim)
@@ -70,13 +65,8 @@ class MultiHeadCrossAttention(nn.Module):
         self.v_proj = nn.Linear(latent_dim, latent_dim)
         self.out_proj = nn.Linear(latent_dim, latent_dim)
 
-    def _reshape_for_attention(self, x: torch.Tensor) -> torch.Tensor:
-        """Reshape [B * N, L, C] to [B * N, H, L, d]."""
-        bnl, length, channels = x.shape
-        return x.view(bnl, length, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-
     def forward(self, queries: torch.Tensor, keys: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
-        """Apply multi-head cross-attention.
+        """Apply single-head scaled dot-product attention.
 
         Args:
             queries: [B * N, Hq, C]
@@ -86,31 +76,25 @@ class MultiHeadCrossAttention(nn.Module):
         Returns:
             [B * N, Hq, C]
         """
-        q = self.q_proj(queries)
-        k = self.k_proj(keys)
-        v = self.v_proj(values)
+        q = self.q_proj(queries)  # [B*N, Hq, C]
+        k = self.k_proj(keys)     # [B*N, W, C]
+        v = self.v_proj(values)   # [B*N, W, C]
 
-        q = self._reshape_for_attention(q)
-        k = self._reshape_for_attention(k)
-        v = self._reshape_for_attention(v)
-
-        attn_logits = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        attn_logits = torch.matmul(q, k.transpose(-2, -1)) / (self.latent_dim ** 0.5)
         attn_weights = torch.softmax(attn_logits, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
         context = torch.matmul(attn_weights, v)
-        context = context.permute(0, 2, 1, 3).contiguous().view(queries.shape[0], queries.shape[1], self.latent_dim)
+        context = self.dropout(context)
         return self.out_proj(context)
 
 
 class HorizonAwareCrossAttentionBlock(nn.Module):
-    """A single transformer-style cross-attention block."""
+    """A single transformer-style cross-attention block using single-head attention."""
 
-    def __init__(self, latent_dim: int, num_heads: int, dropout: float = 0.1, ff_hidden_dim: int | None = None):
+    def __init__(self, latent_dim: int, dropout: float = 0.1, ff_hidden_dim: int | None = None):
         super().__init__()
         self.norm1 = nn.LayerNorm(latent_dim)
         self.norm2 = nn.LayerNorm(latent_dim)
-        self.attn = MultiHeadCrossAttention(latent_dim, num_heads, dropout=dropout)
+        self.attn = CrossAttention(latent_dim, dropout=dropout)
         self.ffn = FeedForwardNetwork(latent_dim, hidden_dim=ff_hidden_dim, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
 
@@ -136,7 +120,6 @@ class LatentGraphEvolutionEncoder(nn.Module):
         self,
         latent_dim: int,
         num_horizons: int,
-        num_heads: int = 4,
         dropout: float = 0.1,
         ff_hidden_dim: int | None = None,
         num_blocks: int = 1,
@@ -144,7 +127,6 @@ class LatentGraphEvolutionEncoder(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.num_horizons = num_horizons
-        self.num_heads = num_heads
         self.dropout = dropout
 
         self.horizon_embeddings = nn.Parameter(torch.randn(num_horizons, latent_dim))
@@ -152,7 +134,6 @@ class LatentGraphEvolutionEncoder(nn.Module):
             [
                 HorizonAwareCrossAttentionBlock(
                     latent_dim=latent_dim,
-                    num_heads=num_heads,
                     dropout=dropout,
                     ff_hidden_dim=ff_hidden_dim,
                 )
@@ -198,6 +179,6 @@ class LatentGraphEvolutionEncoder(nn.Module):
 
 if __name__ == '__main__':
     x = torch.randn(2, 16, 4, 8)
-    encoder = LatentGraphEvolutionEncoder(latent_dim=8, num_horizons=3, num_heads=2, dropout=0.1)
+    encoder = LatentGraphEvolutionEncoder(latent_dim=8, num_horizons=3, dropout=0.1)
     out = encoder(x)
     print(out.shape)
