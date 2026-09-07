@@ -69,14 +69,14 @@ class CrossAttention(nn.Module):
         """Apply single-head scaled dot-product attention.
 
         Args:
-            queries: [B * N, Hq, C]
+            queries: [B * N, H, C]
             keys: [B * N, W, C]
             values: [B * N, W, C]
 
         Returns:
-            [B * N, Hq, C]
+            [B * N, H, C]
         """
-        q = self.q_proj(queries)  # [B*N, Hq, C]
+        q = self.q_proj(queries)  # [B*N, H, C]
         k = self.k_proj(keys)     # [B*N, W, C]
         v = self.v_proj(values)   # [B*N, W, C]
 
