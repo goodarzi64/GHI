@@ -20,9 +20,9 @@ def test_downstream_pipeline_modules():
 
     graph_gen = FutureSpatialDependencyGenerator(latent_dim=8, hidden_dim=16, residual_scale=0.1)
     z_graph = torch.randn(2, 3, 5, 8)
-    a_wind_current = torch.rand(2, 5, 5)
-    a_sem_current = torch.rand(2, 5, 5)
-    a_wind_hat, a_sem_hat = graph_gen(z_graph, a_wind_current, a_sem_current)
+    a_wind_current_dense = torch.rand(2, 5, 5)
+    a_sem_current_dense = torch.rand(2, 5, 5)
+    a_wind_hat, a_sem_hat = graph_gen(z_graph, a_wind_current_dense, a_sem_current_dense, return_sparse=False)
     assert a_wind_hat.shape == (2, 3, 5, 5)
     assert a_sem_hat.shape == (2, 3, 5, 5)
     assert torch.isfinite(a_wind_hat).all()
@@ -44,31 +44,31 @@ def test_future_spatial_dependency_sparse_topk():
     torch.manual_seed(0)
     graph_gen = FutureSpatialDependencyGenerator(latent_dim=8, hidden_dim=16, residual_scale=0.1, k=2)
     z_graph = torch.randn(2, 3, 5, 8)
-    a_wind_current = torch.rand(2, 5, 5)
-    a_sem_current = torch.rand(2, 5, 5)
+    a_wind_current_dense = torch.rand(2, 5, 5)
+    a_sem_current_dense = torch.rand(2, 5, 5)
 
     a_wind_sparse, a_sem_sparse = graph_gen(
         z_graph,
-        a_wind_current,
-        a_sem_current,
+        a_wind_current_dense,
+        a_sem_current_dense,
         return_sparse=True,
-        candidate_scale=3,
     )
 
-    assert isinstance(a_wind_sparse, tuple) and len(a_wind_sparse) == 2
-    assert isinstance(a_sem_sparse, tuple) and len(a_sem_sparse) == 2
-    wind_edge_index, wind_edge_weight = a_wind_sparse
-    sem_edge_index, sem_edge_weight = a_sem_sparse
-    assert wind_edge_index.shape[0] == 2
-    assert sem_edge_index.shape[0] == 2
-    assert wind_edge_weight.shape[0] == wind_edge_index.shape[1]
-    assert sem_edge_weight.shape[0] == sem_edge_index.shape[1]
-    assert (wind_edge_index[0] == wind_edge_index[1]).sum().item() == 0
-    assert (sem_edge_index[0] == sem_edge_index[1]).sum().item() == 0
-    assert wind_edge_index.min().item() >= 0
-    assert sem_edge_index.min().item() >= 0
-    assert wind_edge_index.max().item() < 5 * 2
-    assert sem_edge_index.max().item() < 5 * 2
+    assert isinstance(a_wind_sparse, list) and len(a_wind_sparse) == 3
+    assert isinstance(a_sem_sparse, list) and len(a_sem_sparse) == 3
+
+    for horizon_idx in range(3):
+        wind_edge_index, wind_edge_weight = a_wind_sparse[horizon_idx]
+        sem_edge_index, sem_edge_weight = a_sem_sparse[horizon_idx]
+
+        assert wind_edge_index.shape[0] == 2
+        assert sem_edge_index.shape[0] == 2
+        assert wind_edge_weight.shape[0] == wind_edge_index.shape[1]
+        assert sem_edge_weight.shape[0] == sem_edge_index.shape[1]
+        assert wind_edge_index.min().item() >= 0
+        assert sem_edge_index.min().item() >= 0
+        assert wind_edge_index.max().item() < 5 * 2
+        assert sem_edge_index.max().item() < 5 * 2
 
 
 if __name__ == '__main__':
