@@ -4,7 +4,7 @@ import torch
 
 sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
 
-from Src.latent_graph_evolution_encoder import LatentGraphEvolutionEncoder
+from Src.horizon_aware_latent_context_generation import LatentGraphEvolutionEncoder
 
 
 def test_lgee_shapes_and_finite_values():

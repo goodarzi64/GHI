@@ -4,7 +4,8 @@ import torch
 
 sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
 
-from Src.temporal_graph_state import HorizonAwareMultiGraphAPPNP, ForecastHead, ForecastAndGraphLoss
+from Src.forecast_head import ForecastAndGraphLoss, ForecastHead
+from Src.future_spatial_propagation import HorizonAwareMultiGraphAPPNP
 
 
 def test_horizon_aware_multi_graph_appnp_shapes():

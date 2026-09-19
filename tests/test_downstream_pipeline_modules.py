@@ -4,12 +4,9 @@ import torch
 
 sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
 
-from Src.temporal_graph_state import (
-    CurrentStateRefinement,
-    FutureSpatialDependencyGenerator,
-    MultiGraphAdaptivePropagation,
-    ForecastHead,
-)
+from Src.forecast_head import ForecastHead
+from Src.future_spatial_dependency import FutureSpatialDependencyGenerator
+from Src.future_spatial_propagation import CurrentStateRefinement, MultiGraphAdaptivePropagation
 
 
 def test_downstream_pipeline_modules():
@@ -43,6 +40,38 @@ def test_downstream_pipeline_modules():
     assert torch.isfinite(forecast).all()
 
 
+def test_future_spatial_dependency_sparse_topk():
+    torch.manual_seed(0)
+    graph_gen = FutureSpatialDependencyGenerator(latent_dim=8, hidden_dim=16, residual_scale=0.1, k=2)
+    z_graph = torch.randn(2, 3, 5, 8)
+    a_wind_current = torch.rand(2, 5, 5)
+    a_sem_current = torch.rand(2, 5, 5)
+
+    a_wind_sparse, a_sem_sparse = graph_gen(
+        z_graph,
+        a_wind_current,
+        a_sem_current,
+        return_sparse=True,
+        candidate_scale=3,
+    )
+
+    assert isinstance(a_wind_sparse, tuple) and len(a_wind_sparse) == 2
+    assert isinstance(a_sem_sparse, tuple) and len(a_sem_sparse) == 2
+    wind_edge_index, wind_edge_weight = a_wind_sparse
+    sem_edge_index, sem_edge_weight = a_sem_sparse
+    assert wind_edge_index.shape[0] == 2
+    assert sem_edge_index.shape[0] == 2
+    assert wind_edge_weight.shape[0] == wind_edge_index.shape[1]
+    assert sem_edge_weight.shape[0] == sem_edge_index.shape[1]
+    assert (wind_edge_index[0] == wind_edge_index[1]).sum().item() == 0
+    assert (sem_edge_index[0] == sem_edge_index[1]).sum().item() == 0
+    assert wind_edge_index.min().item() >= 0
+    assert sem_edge_index.min().item() >= 0
+    assert wind_edge_index.max().item() < 5 * 2
+    assert sem_edge_index.max().item() < 5 * 2
+
+
 if __name__ == '__main__':
     test_downstream_pipeline_modules()
+    test_future_spatial_dependency_sparse_topk()
     print('downstream pipeline smoke passed')

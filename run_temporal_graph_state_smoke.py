@@ -1,14 +1,18 @@
 import sys
-sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
-import torch
-from Src.temporal_graph_state import TemporalGraphStateAggregator, LatentGraphGenerator
 
-B, W, N, C = 2, 6, 4, 8
-Z = torch.randn(B, W, N, C)
-S = TemporalGraphStateAggregator(channels=C)(Z)
-print('S', S.shape)
-edge_index = torch.tensor([[0,0,0,1,1,2],[1,2,3,2,3,3]])
-hist_adj = torch.rand(B, N, N)
-gen = LatentGraphGenerator(state_dim=C, hidden_dim=16, n_horizons=3, horizon_emb_dim=C)
-out = gen(hist_adj, S, edge_index)
-print('out', out.shape)
+import torch
+
+sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
+
+from Src.future_spatial_dependency import FutureSpatialDependencyGenerator
+
+B, H, N, C = 2, 3, 5, 8
+z_graph = torch.randn(B, H, N, C)
+a_wind_current = torch.rand(B, N, N)
+a_sem_current = torch.rand(B, N, N)
+
+graph_gen = FutureSpatialDependencyGenerator(latent_dim=C, hidden_dim=16, residual_scale=0.1)
+a_wind_hat, a_sem_hat = graph_gen(z_graph, a_wind_current, a_sem_current)
+
+print('a_wind_hat', a_wind_hat.shape)
+print('a_sem_hat', a_sem_hat.shape)
