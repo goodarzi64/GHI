@@ -71,6 +71,19 @@ def test_future_spatial_dependency_sparse_topk():
         assert sem_edge_index.max().item() < 5 * 2
 
 
+def test_future_spatial_dependency_dense_keeps_only_k_final_edges_per_row():
+    torch.manual_seed(0)
+    graph_gen = FutureSpatialDependencyGenerator(latent_dim=4, hidden_dim=8, residual_scale=0.1, k=2, candidate_scale=3)
+    z_graph = torch.randn(1, 2, 5, 4)
+    a_wind_current_dense = torch.rand(1, 5, 5)
+    a_sem_current_dense = torch.rand(1, 5, 5)
+
+    a_wind_hat, _ = graph_gen(z_graph, a_wind_current_dense, a_sem_current_dense, return_sparse=False)
+
+    nonzero_per_row = (a_wind_hat[0, 0] != 0).float().sum(dim=1)
+    assert (nonzero_per_row <= 2).all()
+
+
 if __name__ == '__main__':
     test_downstream_pipeline_modules()
     test_future_spatial_dependency_sparse_topk()

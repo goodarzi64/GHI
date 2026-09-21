@@ -114,45 +114,51 @@ class FutureSpatialDependencyGenerator(nn.Module):
     def _dense_residual_horizon(self, z_h: torch.Tensor, current_adj: torch.Tensor, mlp: nn.Module, horizon_idx: int, num_horizons: int) -> torch.Tensor:
         """Build one dense future adjacency matrix for a single horizon.
 
-        For each source node, the method restricts scoring to a horizon-aware candidate pool,
-        estimates residual updates only for those likely neighbors, and keeps the strongest
-        Top-K updates in the returned dense matrix. Unselected entries remain zero.
+        The method first narrows each source node to a horizon-aware candidate pool, predicts
+        residual updates only for those candidates, and writes those updates back into the full
+        adjacency row. After all candidate updates are applied, it selects the strongest Top-K
+        edges for that row and zeros all non-selected entries, returning a dense future graph
+        whose row-wise sparsity matches the final end-of-pipeline Top-K rule.
         """
         batch_size, num_nodes, _ = z_h.shape
         candidate_pool = self._candidate_pool_for_horizon(current_adj, horizon_idx, num_horizons)
-        out_adj = torch.zeros_like(current_adj)
+        out_adj = current_adj.clone()
 
         for batch_idx in range(batch_size):
             for src_idx in range(num_nodes):
                 candidates = candidate_pool[batch_idx, src_idx]
-                if candidates.numel() == 0:
-                    continue
-                candidates = candidates[candidates != src_idx]
-                if candidates.numel() == 0:
-                    continue
-                src_state = z_h[batch_idx, src_idx].unsqueeze(0).expand(candidates.numel(), -1)
-                dst_state = z_h[batch_idx, candidates]
-                edge_features = torch.cat([src_state, dst_state], dim=-1)
-                residuals = mlp(edge_features).squeeze(-1) * self.residual_scale
-                current_vals = current_adj[batch_idx, src_idx, candidates]
-                updated = current_vals + residuals
-                top_k = min(self.k, updated.numel())
+                if candidates.numel() > 0:
+                    candidates = candidates[candidates != src_idx]
+                    if candidates.numel() > 0:
+                        src_state = z_h[batch_idx, src_idx].unsqueeze(0).expand(candidates.numel(), -1)
+                        dst_state = z_h[batch_idx, candidates]
+                        edge_features = torch.cat([src_state, dst_state], dim=-1)
+                        residuals = mlp(edge_features).squeeze(-1) * self.residual_scale
+                        current_vals = current_adj[batch_idx, src_idx, candidates].clamp(min=1e-6, max=1.0 - 1e-6)
+                        bounded_updates = torch.sigmoid(torch.logit(current_vals) + residuals)
+                        out_adj[batch_idx, src_idx, candidates] = bounded_updates
+
+                row = out_adj[batch_idx, src_idx].clone()
+                row[src_idx] = -torch.inf
+                top_k = min(self.k, row.numel())
                 if top_k <= 0:
                     continue
-                _, top_pos = torch.topk(updated, k=top_k, sorted=True)
-                selected = candidates[top_pos]
-                out_adj[batch_idx, src_idx, selected] = current_adj[batch_idx, src_idx, selected] + residuals[top_pos]
+                _, top_pos = torch.topk(row, k=top_k, largest=True, sorted=True)
+                out_adj[batch_idx, src_idx] = 0.0
+                out_adj[batch_idx, src_idx, top_pos] = row[top_pos]
         return out_adj
 
     def _sparse_residual_horizon(self, z_h: torch.Tensor, current_adj: torch.Tensor, mlp: nn.Module, horizon_idx: int, num_horizons: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return the sparse edge list for one horizon using candidate-filtered Top-K residuals.
+        """Return the sparse edge list for one horizon after final row-wise Top-K pruning.
 
-        Each source node evaluates only its horizon-aware candidate neighbors, scores the
-        resulting residual updates, and keeps the strongest Top-K edges. The output is a
-        compact edge list for this single horizon and can be concatenated across horizons.
+        Each source node evaluates only its horizon-aware candidate neighbors, predicts residual
+        updates for those candidates, and writes them into the full row. After that, the method
+        applies Top-K over the entire updated adjacency row and emits only the final selected
+        edges as an edge list for this horizon. This matches the dense graph exactly.
         """
         batch_size, num_nodes, _ = z_h.shape
         candidate_pool = self._candidate_pool_for_horizon(current_adj, horizon_idx, num_horizons)
+        updated_adj = current_adj.clone()
 
         edge_index_blocks = []
         edge_weight_blocks = []
@@ -160,23 +166,25 @@ class FutureSpatialDependencyGenerator(nn.Module):
         for batch_idx in range(batch_size):
             for src_idx in range(num_nodes):
                 candidates = candidate_pool[batch_idx, src_idx]
-                if candidates.numel() == 0:
-                    continue
-                candidates = candidates[candidates != src_idx]
-                if candidates.numel() == 0:
-                    continue
-                src_state = z_h[batch_idx, src_idx].unsqueeze(0).expand(candidates.numel(), -1)
-                dst_state = z_h[batch_idx, candidates]
-                edge_features = torch.cat([src_state, dst_state], dim=-1)
-                residuals = mlp(edge_features).squeeze(-1) * self.residual_scale
-                current_vals = current_adj[batch_idx, src_idx, candidates]
-                updated = current_vals + residuals
-                top_k = min(self.k, updated.numel())
+                if candidates.numel() > 0:
+                    candidates = candidates[candidates != src_idx]
+                    if candidates.numel() > 0:
+                        src_state = z_h[batch_idx, src_idx].unsqueeze(0).expand(candidates.numel(), -1)
+                        dst_state = z_h[batch_idx, candidates]
+                        edge_features = torch.cat([src_state, dst_state], dim=-1)
+                        residuals = mlp(edge_features).squeeze(-1) * self.residual_scale
+                        current_vals = current_adj[batch_idx, src_idx, candidates].clamp(min=1e-6, max=1.0 - 1e-6)
+                        bounded_updates = torch.sigmoid(torch.logit(current_vals) + residuals)
+                        updated_adj[batch_idx, src_idx, candidates] = bounded_updates
+
+                row = updated_adj[batch_idx, src_idx].clone()
+                row[src_idx] = -torch.inf
+                top_k = min(self.k, row.numel())
                 if top_k <= 0:
                     continue
-                _, top_pos = torch.topk(updated, k=top_k, sorted=True)
-                selected = candidates[top_pos]
-                selected_vals = current_adj[batch_idx, src_idx, selected] + residuals[top_pos]
+                _, top_pos = torch.topk(row, k=top_k, largest=True, sorted=True)
+                selected = top_pos
+                selected_vals = row[selected]
 
                 src_nodes = torch.full((selected.numel(),), src_idx, device=current_adj.device, dtype=torch.long) + batch_idx * num_nodes
                 dst_nodes = selected + batch_idx * num_nodes
@@ -197,8 +205,9 @@ class FutureSpatialDependencyGenerator(nn.Module):
         """Predict dense future adjacency matrices for every horizon in a batch.
 
         The method evaluates a candidate-filtered residual update for each horizon, then
-        reconstructs a dense [B, H, N, N] graph by retaining only the strongest Top-K edges
-        per source node. Entries not selected for the Top-K set remain zero.
+        reconstructs a dense [B, H, N, N] graph by updating the candidate entries in the full
+        adjacency row and applying final Top-K selection over that row. Unselected edges are
+        zeroed to reflect the final sparsified future graph.
 
         Args:
             z_graph: Latent node embeddings of shape [B, H, N, C].
