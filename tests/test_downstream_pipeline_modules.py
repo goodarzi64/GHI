@@ -28,9 +28,9 @@ def test_downstream_pipeline_modules():
     assert torch.isfinite(a_wind_hat).all()
     assert torch.isfinite(a_sem_hat).all()
 
-    propagator = MultiGraphAdaptivePropagation(channels=8, num_horizons=3, propagation_steps=2, alpha=0.1, dropout=0.0)
+    propagator = MultiGraphAdaptivePropagation(channels=8, num_horizons=3, propagation_steps=2, alpha=0.1, dropout=0.0, use_refinement=False)
     a_phys = torch.rand(5, 5)
-    propagated = propagator(z_refined, a_phys, a_wind_hat, a_sem_hat)
+    propagated = propagator(z_current, a_phys, a_wind_hat, a_sem_hat)
     assert propagated.shape == (2, 3, 5, 8)
     assert torch.isfinite(propagated).all()
 
@@ -38,6 +38,25 @@ def test_downstream_pipeline_modules():
     forecast = head(propagated)
     assert forecast.shape == (2, 3, 5)
     assert torch.isfinite(forecast).all()
+
+
+def test_propagation_refinement_toggle():
+    torch.manual_seed(0)
+    z_current = torch.randn(2, 5, 8)
+    a_phys = torch.rand(5, 5)
+    a_wind_hat = torch.rand(2, 3, 5, 5)
+    a_sem_hat = torch.rand(2, 3, 5, 5)
+
+    no_refine = MultiGraphAdaptivePropagation(channels=8, num_horizons=3, propagation_steps=2, alpha=0.1, dropout=0.0, use_refinement=False)
+    with_refine = MultiGraphAdaptivePropagation(channels=8, num_horizons=3, propagation_steps=2, alpha=0.1, dropout=0.0, use_refinement=True)
+
+    y_no = no_refine(z_current, a_phys, a_wind_hat, a_sem_hat)
+    y_yes = with_refine(z_current, a_phys, a_wind_hat, a_sem_hat)
+
+    assert y_no.shape == (2, 3, 5, 8)
+    assert y_yes.shape == (2, 3, 5, 8)
+    assert torch.isfinite(y_no).all()
+    assert torch.isfinite(y_yes).all()
 
 
 def test_future_spatial_dependency_sparse_topk():
@@ -84,7 +103,38 @@ def test_future_spatial_dependency_dense_keeps_only_k_final_edges_per_row():
     assert (nonzero_per_row <= 2).all()
 
 
+def test_propagation_accepts_sparse_future_graphs():
+    torch.manual_seed(0)
+    z_current = torch.randn(2, 5, 8)
+    a_phys = torch.rand(5, 5)
+
+    graph_gen = FutureSpatialDependencyGenerator(latent_dim=8, hidden_dim=16, residual_scale=0.1, k=2)
+    z_graph = torch.randn(2, 3, 5, 8)
+    a_wind_current_dense = torch.rand(2, 5, 5)
+    a_sem_current_dense = torch.rand(2, 5, 5)
+    a_wind_sparse, a_sem_sparse = graph_gen(
+        z_graph,
+        a_wind_current_dense,
+        a_sem_current_dense,
+        return_sparse=True,
+    )
+
+    propagator = MultiGraphAdaptivePropagation(
+        channels=8,
+        num_horizons=3,
+        propagation_steps=2,
+        alpha=0.1,
+        dropout=0.0,
+        use_refinement=False,
+    )
+    propagated = propagator(z_current, a_phys, a_wind_sparse, a_sem_sparse)
+
+    assert propagated.shape == (2, 3, 5, 8)
+    assert torch.isfinite(propagated).all()
+
+
 if __name__ == '__main__':
     test_downstream_pipeline_modules()
     test_future_spatial_dependency_sparse_topk()
+    test_propagation_accepts_sparse_future_graphs()
     print('downstream pipeline smoke passed')
