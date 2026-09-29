@@ -1,4 +1,3 @@
-```python
 """Temporal context encoder for spatio-temporal forecasting.
 
 This module is intentionally separate from forecasting and graph decoding.
@@ -82,14 +81,21 @@ class TemporalResidualBlock(nn.Module):
         """Apply residual temporal processing and downsampling.
 
         Args:
-            x: [B*N, C, T]
+            x: [B, T, N, C] or [B*N, C, T]
 
         Returns:
-            [B*N, C_out, T_out], where T_out is approximately T/2.
+            [B, T_out, N, C_out] or [B*N, C_out, T_out], depending on input form.
         """
+        if x.dim() == 4:
+            b, t, n, c = x.shape
+            x_flat = x.permute(0, 2, 3, 1).reshape(b * n, c, t)
+            out_flat = self.forward(x_flat)
+            out = out_flat.reshape(b, n, self.out_channels, -1).permute(0, 3, 1, 2)
+            return out
+
         if x.dim() != 3:
             raise ValueError(
-                f"Expected input [B*N, C, T], got {tuple(x.shape)}"
+                f"Expected input [B*N, C, T] or [B, T, N, C], got {tuple(x.shape)}"
             )
 
         residual = self.residual(x)
@@ -273,4 +279,4 @@ if __name__ == "__main__":
 
     print("Input shape: ", x.shape)
     print("Output shape:", out.shape)
-```
+

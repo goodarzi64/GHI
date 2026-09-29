@@ -72,6 +72,73 @@ class HorizonAwarePropagationGate(nn.Module):
         return g_phys, g_wind, g_sem
 
 
+class HorizonAwareMultiGraphAPPNP(nn.Module):
+    """Backward-compatible decoder wrapper for the previous APPNP-style API.
+
+    The current maintained implementation is ``MultiGraphAdaptivePropagation``. This
+    compatibility shim preserves the older constructor and call signature used by the
+    repository tests while delegating to the maintained propagation logic.
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        horizon_emb_dim: int = 4,
+        propagation_steps: int = 3,
+        alpha: float = 0.1,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.channels = channels
+        self.horizon_emb_dim = horizon_emb_dim
+        self.propagator = MultiGraphAdaptivePropagation(
+            channels=channels,
+            num_horizons=1,
+            propagation_steps=propagation_steps,
+            alpha=alpha,
+            dropout=dropout,
+            use_refinement=False,
+        )
+
+    def forward(
+        self,
+        z: torch.Tensor,
+        adj_phys: torch.Tensor,
+        adj_wind: torch.Tensor,
+        adj_sem: torch.Tensor,
+        horizon_idx: int | None = None,
+    ) -> torch.Tensor:
+        """Return a propagated state of shape [B, N, C]."""
+        if z.dim() != 3:
+            raise ValueError(f"Expected z [B, N, C], got {tuple(z.shape)}")
+
+        batch_size, num_nodes, _ = z.shape
+
+        if adj_phys.dim() == 3 and adj_phys.shape[0] == batch_size and adj_phys.shape[1:] == (num_nodes, num_nodes):
+            adj_phys = adj_phys[0]
+        elif adj_phys.dim() == 3 and adj_phys.shape[0] == 1 and adj_phys.shape[1:] == (num_nodes, num_nodes):
+            adj_phys = adj_phys[0]
+        elif adj_phys.dim() != 2:
+            raise ValueError(f"Expected adj_phys [N, N] or [B, N, N], got {tuple(adj_phys.shape)}")
+
+        if adj_wind.dim() == 3 and adj_wind.shape[1:] == (num_nodes, num_nodes):
+            adj_wind = adj_wind.unsqueeze(1)
+        elif adj_wind.dim() == 2 and adj_wind.shape == (num_nodes, num_nodes):
+            adj_wind = adj_wind.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, num_nodes, num_nodes)
+        else:
+            raise ValueError(f"Expected adj_wind [B, N, N] or [N, N], got {tuple(adj_wind.shape)}")
+
+        if adj_sem.dim() == 3 and adj_sem.shape[1:] == (num_nodes, num_nodes):
+            adj_sem = adj_sem.unsqueeze(1)
+        elif adj_sem.dim() == 2 and adj_sem.shape == (num_nodes, num_nodes):
+            adj_sem = adj_sem.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, num_nodes, num_nodes)
+        else:
+            raise ValueError(f"Expected adj_sem [B, N, N] or [N, N], got {tuple(adj_sem.shape)}")
+
+        out = self.propagator(z, adj_phys, adj_wind, adj_sem)
+        return out[:, 0, :, :] if out.dim() == 4 else out
+
+
 class MultiGraphAdaptivePropagation(nn.Module):
     """Propagate a single shared hidden state over future graph views for each horizon."""
 
@@ -150,6 +217,42 @@ class MultiGraphAdaptivePropagation(nn.Module):
             )
 
         # Validate future adjacencies.
+        if isinstance(a_wind_hat, list):
+            if len(a_wind_hat) != self.num_horizons:
+                raise ValueError(f"Expected {self.num_horizons} sparse wind horizons, got {len(a_wind_hat)}")
+            dense_wind = []
+            for edge_index, edge_weight in a_wind_hat:
+                adj = torch.zeros(batch_size, num_nodes, num_nodes, device=z_current.device, dtype=z_current.dtype)
+                if edge_index.numel() > 0:
+                    src = edge_index[0]
+                    dst = edge_index[1]
+                    for batch_idx in range(batch_size):
+                        offset = batch_idx * num_nodes
+                        mask = (src >= offset) & (src < offset + num_nodes) & (dst >= offset) & (dst < offset + num_nodes)
+                        if mask.any():
+                            adj[batch_idx, src[mask] - offset, dst[mask] - offset] = edge_weight[mask]
+                dense_wind.append(adj)
+            a_wind_hat = torch.stack(dense_wind, dim=1)
+
+        if isinstance(a_sem_hat, list):
+            if len(a_sem_hat) != self.num_horizons:
+                raise ValueError(f"Expected {self.num_horizons} sparse semantic horizons, got {len(a_sem_hat)}")
+            dense_sem = []
+            for edge_index, edge_weight in a_sem_hat:
+                adj = torch.zeros(batch_size, num_nodes, num_nodes, device=z_current.device, dtype=z_current.dtype)
+                if edge_index.numel() > 0:
+                    src = edge_index[0]
+                    dst = edge_index[1]
+                    for batch_idx in range(batch_size):
+                        offset = batch_idx * num_nodes
+                        valid = (src >= offset) & (src < offset + num_nodes) & (dst >= offset) & (dst < offset + num_nodes)
+                        if valid.any():
+                            src_local = src[valid] - offset
+                            dst_local = dst[valid] - offset
+                            adj[batch_idx, src_local, dst_local] = edge_weight[valid]
+                dense_sem.append(adj)
+            a_sem_hat = torch.stack(dense_sem, dim=1)
+
         if a_wind_hat.dim() != 4:
             raise ValueError(f"Expected a_wind_hat with shape [B, H, N, N], got {tuple(a_wind_hat.shape)}")
         if a_sem_hat.dim() != 4:

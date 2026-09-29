@@ -1,7 +1,7 @@
-"""Utilities for generating future spatial dependency graphs(FSDG).
+"""Utilities for generating future spatial dependency graphs (FSDG).
 
-This module applies the remaining forecast graph generation path used by the
-pipeline: Z_hist [B, W, N, C] -> LGEE -> Z_graph [B, H, N, C] -> FSDG ->
+This module applies the forecast graph generation path used by the pipeline:
+Z_hist [B, W, N, C] -> horizon-aware latent states [B, H, N, C] -> FSDG ->
 Future Graphs -> FSDP.
 """
 
@@ -10,7 +10,7 @@ import torch.nn as nn
 
 
 class FutureSpatialDependencyGenerator(nn.Module):
-    """Generate future wind and semantic adjacency graphs from LGEE node states.
+    """Generate future wind and semantic adjacency graphs from horizon latent node states.
 
     The generator scores only a horizon-specific candidate pool of likely neighbors,
     estimates a residual update for those candidates from the latent node states, and
@@ -29,7 +29,7 @@ class FutureSpatialDependencyGenerator(nn.Module):
         """Initialize the candidate-filtered graph predictor for wind and semantic dependencies.
 
         Args:
-            latent_dim: Feature size of each node embedding from LGEE.
+            latent_dim: Feature size of each node embedding.
             hidden_dim: Hidden width of the edge-scoring MLPs. Defaults to 2 * latent_dim.
             residual_scale: Scaling factor applied to learned residual updates on the selected
                 candidate edges.
@@ -147,10 +147,10 @@ class FutureSpatialDependencyGenerator(nn.Module):
         flat_edge_features = edge_features.reshape(-1, edge_features.size(-1))
 
         residuals = mlp(flat_edge_features).reshape(batch_size, num_nodes, candidate_k).squeeze(-1) * self.residual_scale
-        current_vals = current_adj.gather(2, candidate_pool).clamp(min=1e-6, max=1.0 - 1e-6)
+        current_vals = current_adj.gather(2, candidate_pool).clamp(min=0.0, max=1.0)
 
         valid_mask = candidate_pool.ne(src_idx.expand_as(candidate_pool))
-        candidate_updates = torch.sigmoid(torch.logit(current_vals) + residuals)
+        candidate_updates = torch.clamp(current_vals + residuals, min=0.0, max=1.0)
         candidate_updates = torch.where(valid_mask, candidate_updates, torch.zeros_like(candidate_updates))
         out_adj.scatter_(2, candidate_pool, candidate_updates)
 
@@ -158,7 +158,7 @@ class FutureSpatialDependencyGenerator(nn.Module):
             for src_idx in range(num_nodes):
                 row = out_adj[batch_idx, src_idx].clone()
                 row[src_idx] = -torch.inf
-                top_k = min(self.k, row.numel())
+                top_k = min(self.k, max(0, num_nodes - 1))
                 if top_k <= 0:
                     selected_rows.append((
                         torch.empty((0,), device=current_adj.device, dtype=torch.long),

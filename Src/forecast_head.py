@@ -3,30 +3,66 @@ import torch.nn as nn
 
 
 class ForecastHead(nn.Module):
-    """Lightweight regression head for horizon-wise node forecasts."""
+    """Lightweight regression head for horizon-wise node forecasts.
 
-    def __init__(self, channels: int, hidden_dim: int | None = None, dropout: float = 0.1):
+    Supports both the current maintained interface, where the input is a 4D tensor
+    [B, H, N, C], and the legacy decoder-style interface that passes a current
+    state [B, N, C] together with explicit horizon indices.
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        hidden_dim: int | None = None,
+        dropout: float = 0.1,
+        num_horizons: int | None = None,
+        horizon_emb_dim: int | None = None,
+    ):
         super().__init__()
         hidden_dim = 2 * channels if hidden_dim is None else hidden_dim
+        self.num_horizons = num_horizons
+        self.horizon_emb_dim = horizon_emb_dim or 0
         self.norm = nn.LayerNorm(channels)
         self.proj_in = nn.Linear(channels, hidden_dim)
         self.act = nn.GELU()
         self.drop = nn.Dropout(dropout)
         self.proj_out = nn.Linear(hidden_dim, 1)
 
-    def forward(self, h_final: torch.Tensor) -> torch.Tensor:
-        """Map [B, H, N, C] to [B, H, N]."""
-        if h_final.dim() != 4:
-            raise ValueError(f"Expected propagated states [B, H, N, C], got {tuple(h_final.shape)}")
+        if num_horizons is not None and num_horizons > 0:
+            self.horizon_embeddings = nn.Parameter(torch.randn(num_horizons, channels))
+        else:
+            self.horizon_embeddings = None
 
-        x = self.norm(h_final)
-        batch_size, num_horizons, num_nodes, channels = h_final.shape
-        x = x.reshape(batch_size * num_horizons * num_nodes, channels)
-        x = self.proj_in(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.proj_out(x).squeeze(-1)
-        return x.reshape(batch_size, num_horizons, num_nodes)
+    def forward(self, h_final: torch.Tensor, horizon_idx: torch.Tensor | None = None) -> torch.Tensor:
+        """Map state(s) to [B, H, N]. Accepts either [B, H, N, C] or [B, N, C]."""
+        if h_final.dim() == 4:
+            x = self.norm(h_final)
+            batch_size, num_horizons, num_nodes, channels = h_final.shape
+            x = x.reshape(batch_size * num_horizons * num_nodes, channels)
+            x = self.proj_in(x)
+            x = self.act(x)
+            x = self.drop(x)
+            x = self.proj_out(x).squeeze(-1)
+            return x.reshape(batch_size, num_horizons, num_nodes)
+
+        if h_final.dim() == 3:
+            batch_size, num_nodes, channels = h_final.shape
+            if self.num_horizons is not None and self.num_horizons > 0:
+                horizon_count = self.num_horizons
+            elif horizon_idx is not None:
+                horizon_count = int(torch.as_tensor(horizon_idx).max().item()) + 1
+            else:
+                horizon_count = 1
+
+            state = self.norm(h_final).unsqueeze(1).expand(batch_size, horizon_count, num_nodes, channels)
+            state = state.reshape(batch_size * horizon_count * num_nodes, channels)
+            state = self.proj_in(state)
+            state = self.act(state)
+            state = self.drop(state)
+            pred = self.proj_out(state).squeeze(-1)
+            return pred.reshape(batch_size, horizon_count, num_nodes)
+
+        raise ValueError(f"Expected state tensor of rank 3 or 4, got {tuple(h_final.shape)}")
 
 
 class ForecastAndGraphLoss(nn.Module):
