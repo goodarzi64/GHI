@@ -139,7 +139,13 @@ def embedding_variance(Z: torch.Tensor) -> torch.Tensor:
     return ((Z - mean_z) ** 2).sum() / Z.shape[0]
 
 
-def topk_row(A: torch.Tensor, k: int, sym: bool = False, eps: float = 1e-8) -> torch.Tensor:
+def topk_row(
+    A: torch.Tensor,
+    k: int,
+    sym: bool = False,
+    eps: float = 1e-8,
+    preserve_diagonal: bool = False,
+) -> torch.Tensor:
     """
     Top-k refinement for adjacency matrices.
     Supports A: [N, N] or A: [B, N, N].
@@ -166,9 +172,18 @@ def topk_row(A: torch.Tensor, k: int, sym: bool = False, eps: float = 1e-8) -> t
     k = min(k, N)
 
     # ---- Top-k per row ----
-    vals, idx = torch.topk(A, k, dim=2)      # [B, N, k]
     out = torch.zeros_like(A)                # [B, N, N]
-    out.scatter_(2, idx, vals)               # put top-k values in place
+    if preserve_diagonal:
+        neighbor_k = max(0, k - 1)
+        if neighbor_k:
+            candidates = A.clone()
+            candidates.diagonal(dim1=-2, dim2=-1).fill_(float("-inf"))
+            vals, idx = torch.topk(candidates, neighbor_k, dim=2)
+            out.scatter_(2, idx, vals)
+        out.diagonal(dim1=-2, dim2=-1).copy_(A.diagonal(dim1=-2, dim2=-1))
+    else:
+        vals, idx = torch.topk(A, k, dim=2)  # [B, N, k]
+        out.scatter_(2, idx, vals)           # put top-k values in place
 
     # ---- Symmetry optional ----
     if sym:

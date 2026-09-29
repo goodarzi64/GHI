@@ -147,12 +147,14 @@ def build_semantic_adjacency(
     # Use inverse-distance weights instead of a Gaussian similarity kernel.
     eps = 1e-8
     weights = 1.0 / (dtw_dist + eps)
-    if not self_loops:
+    if self_loops:
+        weights.fill_diagonal_(1.0)
+    else:
         weights.fill_diagonal_(0)
 
     return {
         "A_dtw": dtw_dist,
-        "A_topk": topk_row(weights, k=k, sym=topk_sym, eps=1e-8),
+        "A_topk": topk_row(weights, k=k, sym=topk_sym, eps=1e-8, preserve_diagonal=self_loops),
         "A_row_norm": row_normalize(weights, eps=1e-8),
         "A_sym_norm": symmetry_normalize(weights, eps=1e-8),
     }
@@ -191,7 +193,7 @@ def build_static_adjacency(
 
     out = {
         "A_raw": A_raw,
-        "A_topk": topk_row(A_raw, k=k, sym=topk_sym, eps=1e-8),
+        "A_topk": topk_row(A_raw, k=k, sym=topk_sym, eps=1e-8, preserve_diagonal=self_loops),
         "A_row_norm": row_normalize(A_raw, eps=1e-8),
         "A_sym_norm": symmetry_normalize(A_raw, eps=1e-8),
     }
@@ -283,7 +285,7 @@ def build_wind_cloud_adjacency(
 
     A = wind_module(wind_feats, sparse=sparse, k=k, self_loops=self_loops)
     if topk_sym and not sparse:
-        A = topk_row(A, k=k, sym=True, eps=1e-8)
+        A = topk_row(A, k=k, sym=True, eps=1e-8, preserve_diagonal=self_loops)
 
     out = {
         "A_wind": A,
@@ -291,7 +293,7 @@ def build_wind_cloud_adjacency(
         "A_sym_norm": symmetry_normalize(A, eps=1e-8),
     }
     if topk_sym:
-        out["A_topk"] = topk_row(A, k=k, sym=True, eps=1e-8)
+        out["A_topk"] = topk_row(A, k=k, sym=True, eps=1e-8, preserve_diagonal=self_loops)
 
     return out
 
@@ -346,7 +348,9 @@ def build_dtw_adjacency(
     # use those for sparsification/normalization to avoid the expensive exp().
     eps = 1e-8
     weights = 1.0 / (dtw_dist + eps)
-    if not self_loops:
+    if self_loops:
+        weights.fill_diagonal_(1.0)
+    else:
         weights.fill_diagonal_(0)
 
     out: Dict[str, torch.Tensor] = {
@@ -355,7 +359,7 @@ def build_dtw_adjacency(
         "A_sym_norm": symmetry_normalize(weights, eps=1e-8),
     }
     if topk_sym:
-        out["A_topk"] = topk_row(weights, k=k, sym=True, eps=1e-8)
+        out["A_topk"] = topk_row(weights, k=k, sym=True, eps=1e-8, preserve_diagonal=self_loops)
 
     return out
 
@@ -556,7 +560,9 @@ class WindAdjacency(nn.Module):
         # ---------------------------
         # self loop connection
         # ---------------------------
-        if not self_loops:
+        if self_loops:
+            base.diagonal(dim1=-2, dim2=-1).fill_(1.0)
+        else:
             base.diagonal(dim1=-2, dim2=-1).zero_()
 
         # ---------------------------
@@ -565,7 +571,7 @@ class WindAdjacency(nn.Module):
         if sparse:
             A = []
             for b in range(B):
-                A_b = topk_row(base[b], k=k, sym=False, eps=1e-8)     # returns [N,N]
+                A_b = topk_row(base[b], k=k, sym=False, eps=1e-8, preserve_diagonal=self_loops)
                 A.append(A_b)
             A = torch.stack(A, dim=0)                       # [B,N,N]
         else:
