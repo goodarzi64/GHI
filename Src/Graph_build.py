@@ -15,12 +15,37 @@ except ImportError:  # pragma: no cover - fallback for minimal environments
 
 
 class GeoGeometry:
+    """Compute pairwise WGS84 distances and bearings for geographic nodes.
+
+    Parameters
+    ----------
+    df_geo
+        Table with one row per node and ``latitude`` and ``longitude`` columns.
+    device : str, default="cpu"
+        Torch device on which to store the resulting matrices.
+
+    Attributes
+    ----------
+    dist_matrix : torch.Tensor
+        Pairwise geodesic distances in kilometers, with shape ``[N, N]``.
+    theta_matrix : torch.Tensor
+        Pairwise forward azimuths in radians, with shape ``[N, N]``.
+    """
+
     def __init__(self, df_geo, device: str = "cpu") -> None:
+        """Build and store distance and bearing matrices for ``df_geo``."""
         self.df_geo = df_geo
         self.device = device
         self._build()
 
     def _build(self) -> None:
+        """Calculate WGS84 geodesics and assign the resulting tensors.
+
+        Returns
+        -------
+        None
+            Results are assigned to ``dist_matrix`` and ``theta_matrix``.
+        """
         try:
             from pyproj import Geod
         except ModuleNotFoundError as exc:
@@ -49,15 +74,47 @@ class GeoGeometry:
 
 
 class DistanceKernel:
+    """Convert pairwise distances into Gaussian-kernel edge weights.
+
+    Parameters
+    ----------
+    dist_matrix : torch.Tensor
+        Pairwise distances with shape ``[N, N]``.
+    sigma : torch.Tensor or float or None, default=None
+        Kernel width. If omitted or false-valued, it is estimated from the
+        strict upper triangle of ``dist_matrix``.
+    """
+
     def __init__(self, dist_matrix: torch.Tensor, sigma: torch.Tensor | float | None = None) -> None:
+        """Initialize the distance matrix and select a kernel width."""
         self.dist_matrix = dist_matrix
         self.sigma = sigma or self._estimate_sigma()
 
     def _estimate_sigma(self) -> torch.Tensor:
+        """Estimate kernel width from unique off-diagonal distances.
+
+        Returns
+        -------
+        torch.Tensor
+            Standard deviation of the strict upper-triangular distances.
+        """
         mask = torch.triu(torch.ones_like(self.dist_matrix), diagonal=1).bool()
         return torch.std(self.dist_matrix[mask])
 
     def compute(self, self_loops: bool = False) -> torch.Tensor:
+        """Compute Gaussian weights and optionally retain diagonal entries.
+
+        Parameters
+        ----------
+        self_loops : bool, default=False
+            If false, set the output diagonal to zero. If true, leave the
+            Gaussian-kernel diagonal values unchanged.
+
+        Returns
+        -------
+        torch.Tensor
+            Dense weight matrix with shape ``[N, N]``.
+        """
         A = torch.exp(- (self.dist_matrix ** 2) / (2 * self.sigma ** 2))
         if not self_loops:
             A.fill_diagonal_(0)
@@ -65,8 +122,20 @@ class DistanceKernel:
 
 
 def build_geo_matrices(df_geo, device: str = "cpu") -> Dict[str, torch.Tensor]:
-    """
-    Compute distance/theta matrices once and reuse across modules.
+    """Build reusable geographic distance and bearing matrices.
+
+    Parameters
+    ----------
+    df_geo
+        Table with ``latitude`` and ``longitude`` columns, one row per node.
+    device : str, default="cpu"
+        Torch device for the returned tensors.
+
+    Returns
+    -------
+    Dict[str, torch.Tensor]
+        Mapping with ``dist_matrix`` (kilometers) and ``theta_matrix``
+        (radians), each shaped ``[N, N]``.
     """
     geo = GeoGeometry(df_geo, device=device)
     return {
@@ -76,7 +145,19 @@ def build_geo_matrices(df_geo, device: str = "cpu") -> Dict[str, torch.Tensor]:
 
 
 def dtw_distance(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """Compute DTW distance between two time series of shape [W, F]."""
+    """Compute accumulated Euclidean dynamic time warping distance.
+
+    Parameters
+    ----------
+    x, y : torch.Tensor
+        Time series with shapes ``[W1, F]`` and ``[W2, F]``. Both must have
+        the same feature size; inputs are converted to floating point.
+
+    Returns
+    -------
+    torch.Tensor
+        Scalar DTW cost on the same device as the inputs.
+    """
     x = x.float()
     y = y.float()
 
@@ -112,16 +193,22 @@ def build_semantic_adjacency(
         Shape [N, W] or [N, W, 1].
     tcc : torch.Tensor
         Shape [N, W] or [N, W, 1].
+    sigma : float or None, default=None
+        Reserved for API compatibility; the current implementation uses
+        inverse-DTW-distance weights and does not use ``sigma``.
+    k : int, default=5
+        Maximum number of neighbors retained per row in ``A_topk``.
+    self_loops : bool, default=False
+        Whether diagonal weights are set to one instead of zero.
+    topk_sym : bool, default=False
+        Whether ``A_topk`` is symmetrized after row-wise top-k selection.
 
     Returns
     -------
     dict[str, torch.Tensor]
-        A dictionary containing:
-        - A_dtw: pairwise DTW distance matrix.
-        - A_sim: similarity matrix from Gaussian kernel.
-        - A_topk: top-k sparsified similarity adjacency.
-        - A_row_norm: row-normalized similarity adjacency.
-        - A_sym_norm: symmetric normalized similarity adjacency.
+        Mapping containing ``A_dtw``, ``A_topk``, ``A_row_norm``, and
+        ``A_sym_norm``, each shaped ``[N, N]``. Adjacency variants use inverse
+        DTW distances; ``A_topk`` is symmetrized only when ``topk_sym`` is true.
     """
     ghi = ghi.float()
     tcc = tcc.float()
@@ -169,17 +256,31 @@ def build_static_adjacency(
     topk_sym: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
-    Build common static adjacency variants from a distance matrix.
+    Build Gaussian-kernel static adjacency variants from geographic distances.
 
-    Returns a dict with:
-      - A_raw
-      - A_topk
-      - A_row_norm
-      - A_sym_norm
+    Parameters
+    ----------
+    dist_matrix : torch.Tensor or None, default=None
+        Pairwise distances in kilometers with shape ``[N, N]``. If omitted,
+        ``df_geo`` must be supplied.
+    df_geo
+        Optional geographic table with ``latitude`` and ``longitude`` columns;
+        used to calculate matrices when ``dist_matrix`` is omitted.
+    device : str, default="cpu"
+        Device used when geographic matrices need to be computed.
+    k : int, default=5
+        Number of neighbors retained per row in ``A_topk``.
+    self_loops : bool, default=False
+        Whether the raw and top-k adjacency retain diagonal weights.
+    topk_sym : bool, default=False
+        Whether top-k sparsification is symmetrized.
 
-    Backward compatibility:
-      - If `dist_matrix` is None and `df_geo` is provided, matrices are computed
-        internally and included in the output.
+    Returns
+    -------
+    Dict[str, torch.Tensor]
+        Always contains ``A_raw``, ``A_topk``, ``A_row_norm``, and
+        ``A_sym_norm`` (each ``[N, N]``). If ``df_geo`` was used, also
+        contains ``dist_matrix`` and ``theta_matrix`` (each ``[N, N]``).
     """
     geo_mats = None
     if dist_matrix is None:
@@ -248,10 +349,10 @@ def build_wind_cloud_adjacency(
     Returns
     -------
     dict[str, torch.Tensor]
-        - A_wind: wind/cloud adjacency [N, N] or [B, N, N].
-        - A_row_norm: row-normalized adjacency.
-        - A_sym_norm: symmetric normalized adjacency.
-        - A_topk: sparsified adjacency if `topk_sym` is True.
+        Contains ``A_wind``, ``A_row_norm``, and ``A_sym_norm`` with shape
+        ``[N, N]`` for unbatched input or ``[B, N, N]`` for batched input.
+        Also contains ``A_topk`` when ``topk_sym`` is true. ``A_wind`` is
+        row-normalized in dense mode; sparse mode returns top-k weights.
     """
     wind_sp = wind_sp.float()
     wind_dir = wind_dir.float()
@@ -313,7 +414,8 @@ def build_dtw_adjacency(
     X : [N, W, F] or [N, W] tensor.
         Node windows over time.
     sigma : float | None
-        Gaussian kernel width. If None, estimated from upper triangle.
+        Reserved for API compatibility; the current implementation uses
+        inverse-distance weights and does not use ``sigma``.
     k : int
         Number of neighbors used for optional sparsification.
     self_loops : bool
@@ -324,11 +426,9 @@ def build_dtw_adjacency(
     Returns
     -------
     dict[str, torch.Tensor]
-        - A_dtw: DTW distance matrix [N, N].
-        - A_sim: Gaussian similarity matrix [N, N].
-        - A_row_norm: row-normalized similarity.
-        - A_sym_norm: symmetric normalized similarity.
-        - A_topk: optional sparsified adjacency if `topk_sym` is True.
+        Contains ``A_dtw``, ``A_row_norm``, and ``A_sym_norm``, each shaped
+        ``[N, N]``. Contains ``A_topk`` (also ``[N, N]``) only when
+        ``topk_sym`` is true. Similarity weights are inverse DTW distances.
     """
     if X.ndim == 2:
         X = X.unsqueeze(-1)
@@ -384,22 +484,26 @@ def build_dtw_graphs_from_timeseries(
     L : int
         Window length used for DTW comparisons.
     sigma : float | None
-        Gaussian kernel width.
+        Reserved for API compatibility; the downstream DTW adjacency builder
+        currently does not use it.
     k : int
         Number of neighbors for optional top-k sparsification.
     self_loops : bool
         Whether to preserve self-loops.
     topk_sym : bool
         If True, returns symmetric top-k graphs.
+    progress : bool, default=False
+        Show a progress bar when ``tqdm`` is installed.
+    compute_sim : bool or None, default=None
+        Reserved for API compatibility; it does not affect the current output.
 
     Returns
     -------
     dict[str, torch.Tensor]
-        - A_dtw: [T, N, N] DTW distance matrices.
-        - A_sim: [T, N, N] similarity matrices.
-        - A_row_norm: [T, N, N] row-normalized similarities.
-        - A_sym_norm: [T, N, N] symmetric normalized similarities.
-        - A_topk: [T, N, N] sparsified graphs if `topk_sym` is True.
+        Contains ``A_dtw``, ``A_row_norm``, and ``A_sym_norm``, each shaped
+        ``[T, N, N]``. Contains ``A_topk`` with the same shape only when
+        ``topk_sym`` is true. Early windows are left-padded by repeating the
+        timestep at index ``min(L - 1, T - 1)``.
     """
     if X.ndim != 3:
         raise ValueError("X must have shape [T, N, F].")
@@ -458,6 +562,28 @@ class WindAdjacency(nn.Module):
     Supports batched input: wind_feats [B, N, F].
     Produces row-stochastic adjacency per batch.
     Important: A_wind[i,j] is how much node i influences node j along wind.
+
+    Parameters
+    ----------
+    D_ij : torch.Tensor
+        Pairwise distances with shape ``[N, N]``.
+    Theta_ij : torch.Tensor
+        Pairwise bearings in radians with shape ``[N, N]``.
+    R : float, default=150.0
+        Distance-decay scale used by the exponential distance weight.
+    lambda_theta : float, default=1.0
+        Directional alignment sharpness.
+    cone_half_angle : float or None, default=None
+        Optional angular cutoff in radians; edges outside the cone are removed.
+    wind_speed_pos : int, default=0
+        Feature index of wind speed in ``wind_feats``.
+    wind_dir_pos : int, default=1
+        Feature index of wind direction in radians, using the meteorological
+        direction-from convention.
+    cloud_cover_pos : int or None, default=None
+        Optional feature index of cloud cover in ``wind_feats``.
+    cloud_cover_alpha : float, default=1.0
+        Strength of the multiplicative cloud-cover adjustment.
     """
 
     def __init__(
@@ -472,6 +598,16 @@ class WindAdjacency(nn.Module):
         cloud_cover_pos: int | None = None,
         cloud_cover_alpha: float = 1.0,
     ) -> None:
+        """Register static geometry and configure feature indices and weights.
+
+        Parameters
+        ----------
+        Parameters are the same as those documented on :class:`WindAdjacency`.
+
+        Returns
+        -------
+        None
+        """
         super().__init__()
         self.register_buffer("D_ij", D_ij)         # [N,N]
         self.register_buffer("Theta_ij", Theta_ij) # [N,N]
@@ -487,7 +623,18 @@ class WindAdjacency(nn.Module):
 
     @staticmethod
     def angdiff(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        # works with broadcasting (batched or non-batched)
+        """Return the signed shortest angular difference ``a - b``.
+
+        Parameters
+        ----------
+        a, b : torch.Tensor
+            Angles in radians with broadcast-compatible shapes.
+
+        Returns
+        -------
+        torch.Tensor
+            Wrapped differences in the interval ``[-pi, pi)``.
+        """
         return (a - b + torch.pi) % (2 * torch.pi) - torch.pi
 
     def forward(
@@ -497,6 +644,29 @@ class WindAdjacency(nn.Module):
         k: int = 5,
         self_loops: bool = False,
     ) -> torch.Tensor:
+        """Construct a wind-informed adjacency from node-level wind features.
+
+        Parameters
+        ----------
+        wind_feats : torch.Tensor
+            Node features shaped ``[N, F]`` or ``[B, N, F]``. Configured
+            feature positions select wind speed, wind direction, and optionally
+            cloud cover.
+        sparse : bool, default=False
+            If true, apply row-wise top-k selection; otherwise row-normalize
+            the dense weights.
+        k : int, default=5
+            Number of neighbors retained in sparse mode.
+        self_loops : bool, default=False
+            Whether diagonal edge weights are set to one before normalization
+            or sparsification.
+
+        Returns
+        -------
+        torch.Tensor
+            Adjacency shaped ``[N, N]`` for unbatched input or ``[B, N, N]``
+            for batched input.
+        """
         # ---------------------------
         # Handle shapes
         # ---------------------------

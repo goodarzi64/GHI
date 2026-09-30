@@ -155,6 +155,18 @@ def topk_row(
         k: number of neighbors to keep
         sym: enforce symmetry (A ← (A+Aᵀ)/2) before normalization
         eps: numerical stability
+        preserve_diagonal: reserve one of the k entries for each self-loop
+
+    Example with sym=False, k=2, and preserve_diagonal=True:
+        Input:  [[1.0, 0.8, 0.1],
+                 [0.8, 1.0, 0.4],
+                 [0.1, 0.4, 1.0]]
+        Output: [[0.56, 0.44, 0.00],
+                 [0.44, 0.56, 0.00],
+                 [0.00, 0.29, 0.71]]
+        Each row keeps its diagonal and strongest other edge, then is
+        row-normalized. With sym=True, symmetric degree normalization is used
+        instead, and symmetrization can add reciprocal edges.
 
     Returns:
         Refined adjacency of the same shape as A
