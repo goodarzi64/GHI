@@ -234,13 +234,14 @@ def prepare_adjacency_matrices(
             D_ij = torch.ones(N, N, device=device)
             Theta_ij = torch.zeros(N, N, device=device)
         
-        wind_kernel = WindAdjacency(D_ij, Theta_ij, device=device)
-        A_wind = wind_kernel(wind_features[None, ...], sparse=False, k=5)  # [1, N, N]
+        wind_kernel = WindAdjacency(D_ij, Theta_ij).to(device)
+        A_wind = wind_kernel(wind_features[None, ...])  # [1, N, N]
         A_wind = A_wind[0]  # [N, N]
     else:
         A_wind = torch.ones_like(A_static) / A_static.shape[0]
     
-    ei, ew = dense_to_sparse(A_wind)
+    # A_wind is receiver-row [dst, src]; PyG edge indices are [src, dst].
+    ei, ew = dense_to_sparse(A_wind.T.contiguous())
     edge_indices.append(ei)
     edge_weights.append(ew)
     

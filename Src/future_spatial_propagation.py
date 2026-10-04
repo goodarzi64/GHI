@@ -230,7 +230,7 @@ class MultiGraphAdaptivePropagation(nn.Module):
                         offset = batch_idx * num_nodes
                         mask = (src >= offset) & (src < offset + num_nodes) & (dst >= offset) & (dst < offset + num_nodes)
                         if mask.any():
-                            adj[batch_idx, src[mask] - offset, dst[mask] - offset] = edge_weight[mask]
+                            adj[batch_idx, dst[mask] - offset, src[mask] - offset] = edge_weight[mask]
                 dense_wind.append(adj)
             a_wind_hat = torch.stack(dense_wind, dim=1)
 
@@ -249,7 +249,7 @@ class MultiGraphAdaptivePropagation(nn.Module):
                         if valid.any():
                             src_local = src[valid] - offset
                             dst_local = dst[valid] - offset
-                            adj[batch_idx, src_local, dst_local] = edge_weight[valid]
+                            adj[batch_idx, dst_local, src_local] = edge_weight[valid]
                 dense_sem.append(adj)
             a_sem_hat = torch.stack(dense_sem, dim=1)
 
@@ -305,9 +305,9 @@ class MultiGraphAdaptivePropagation(nn.Module):
 
             for _ in range(self.propagation_steps):
                 # Message tensors are normalized only for gate generation.
-                m_phys = torch.einsum('bni,bnc->bic', a_phys_norm, h)
-                m_wind = torch.einsum('bni,bnc->bic', a_wind_h, h)
-                m_sem = torch.einsum('bni,bnc->bic', a_sem_h, h)
+                m_phys = torch.einsum('bij,bjc->bic', a_phys_norm, h)
+                m_wind = torch.einsum('bij,bjc->bic', a_wind_h, h)
+                m_sem = torch.einsum('bij,bjc->bic', a_sem_h, h)
 
                 m_phys_gate = self.message_norm_phys(m_phys)
                 m_wind_gate = self.message_norm_wind(m_wind)

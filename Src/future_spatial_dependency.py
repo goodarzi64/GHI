@@ -14,8 +14,9 @@ class FutureSpatialDependencyGenerator(nn.Module):
 
     The generator scores only a horizon-specific candidate pool of likely neighbors,
     estimates a residual update for those candidates from the latent node states, and
-    retains the strongest Top-K updates per source node. The resulting graphs support
-    both dense matrix output and sparse edge-list output for downstream propagation.
+    retains the strongest Top-K updates per destination node. Directed adjacency rows
+    represent receivers (A_in[dst, src]); sparse edge lists remain [src, dst]. The
+    resulting graphs support dense and sparse downstream propagation.
     """
 
     def __init__(
@@ -78,9 +79,9 @@ class FutureSpatialDependencyGenerator(nn.Module):
     def _candidate_pool_for_horizon(self, current_adj: torch.Tensor, horizon_idx: int, num_horizons: int) -> torch.Tensor:
         """Build a horizon-aware per-node candidate pool from the current dense adjacency.
 
-        For each batch item and each source node, the method ranks candidate destinations by
-        the current adjacency strength, removes self-loops, and returns the most relevant
-        neighbors for residual scoring at that forecast horizon.
+        For each batch item and destination node, the method ranks candidate sources by
+        incoming adjacency strength, removes self-loops, and returns likely senders for
+        residual scoring at that forecast horizon.
         """
         if current_adj.dim() != 3:
             raise ValueError(f"Expected current adjacency [B, N, N], got {tuple(current_adj.shape)}")
@@ -92,22 +93,22 @@ class FutureSpatialDependencyGenerator(nn.Module):
         candidate_pool = []
         for batch_idx in range(batch_size):
             row_pool = []
-            for src_idx in range(num_nodes):
-                row = current_adj[batch_idx, src_idx].clone()
-                row[src_idx] = -torch.inf
+            for dst_idx in range(num_nodes):
+                row = current_adj[batch_idx, dst_idx].clone()
+                row[dst_idx] = -torch.inf
                 if row.numel() == 0:
                     row_pool.append(torch.empty((0,), device=current_adj.device, dtype=torch.long))
                     continue
                 if row.abs().sum() == 0:
-                    dst_idx = torch.arange(num_nodes, device=current_adj.device)
-                    dst_idx = dst_idx[dst_idx != src_idx]
-                    if dst_idx.numel() == 0:
+                    src_idx = torch.arange(num_nodes, device=current_adj.device)
+                    src_idx = src_idx[src_idx != dst_idx]
+                    if src_idx.numel() == 0:
                         row_pool.append(torch.empty((0,), device=current_adj.device, dtype=torch.long))
                     else:
-                        row_pool.append(dst_idx[:candidate_k])
+                        row_pool.append(src_idx[:candidate_k])
                     continue
-                _, dst_idx = torch.topk(row, k=min(candidate_k, row.numel()), largest=True, sorted=True)
-                row_pool.append(dst_idx)
+                _, src_idx = torch.topk(row, k=min(candidate_k, row.numel()), largest=True, sorted=True)
+                row_pool.append(src_idx)
             candidate_pool.append(torch.stack(row_pool, dim=0))
         return torch.stack(candidate_pool, dim=0)
 
@@ -120,11 +121,11 @@ class FutureSpatialDependencyGenerator(nn.Module):
         num_horizons: int,
         symmetric: bool = False,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]]:
-        """Apply the candidate-scoring residual update and final row-wise Top-K pruning.
+        """Apply candidate scoring and row-wise incoming-edge Top-K pruning.
 
-        Returns the fully-updated adjacency tensor after Top-K selection together with the
-        selected source/destination indices and weights for each row. This shared helper is
-        used by both dense and sparse output builders so both representations stay identical.
+        Returns the fully updated receiver-row adjacency and selected edge indices in
+        conventional source/destination order. Both output builders use this helper so
+        dense and sparse representations stay consistent.
         """
         batch_size, num_nodes, _ = z_h.shape
         candidate_pool = self._candidate_pool_for_horizon(current_adj, horizon_idx, num_horizons)
@@ -135,29 +136,29 @@ class FutureSpatialDependencyGenerator(nn.Module):
             return out_adj, selected_rows
 
         batch_idx = torch.arange(batch_size, device=current_adj.device).view(batch_size, 1, 1)
-        src_idx = torch.arange(num_nodes, device=current_adj.device).view(1, num_nodes, 1)
+        dst_idx = torch.arange(num_nodes, device=current_adj.device).view(1, num_nodes, 1)
         candidate_k = candidate_pool.size(-1)
 
         if candidate_k <= 0:
             return out_adj, selected_rows
 
-        src_state = z_h[:, :, None, :].expand(-1, -1, candidate_k, -1)
-        dst_state = z_h[batch_idx, candidate_pool, :]
+        dst_state = z_h[:, :, None, :].expand(-1, -1, candidate_k, -1)
+        src_state = z_h[batch_idx, candidate_pool, :]
         edge_features = torch.cat([src_state, dst_state], dim=-1)
         flat_edge_features = edge_features.reshape(-1, edge_features.size(-1))
 
         residuals = mlp(flat_edge_features).reshape(batch_size, num_nodes, candidate_k).squeeze(-1) * self.residual_scale
         current_vals = current_adj.gather(2, candidate_pool).clamp(min=0.0, max=1.0)
 
-        valid_mask = candidate_pool.ne(src_idx.expand_as(candidate_pool))
+        valid_mask = candidate_pool.ne(dst_idx.expand_as(candidate_pool))
         candidate_updates = torch.clamp(current_vals + residuals, min=0.0, max=1.0)
         candidate_updates = torch.where(valid_mask, candidate_updates, torch.zeros_like(candidate_updates))
         out_adj.scatter_(2, candidate_pool, candidate_updates)
 
         for batch_idx in range(batch_size):
-            for src_idx in range(num_nodes):
-                row = out_adj[batch_idx, src_idx].clone()
-                row[src_idx] = -torch.inf
+            for dst_idx in range(num_nodes):
+                row = out_adj[batch_idx, dst_idx].clone()
+                row[dst_idx] = -torch.inf
                 top_k = min(self.k, max(0, num_nodes - 1))
                 if top_k <= 0:
                     selected_rows.append((
@@ -167,23 +168,23 @@ class FutureSpatialDependencyGenerator(nn.Module):
                     ))
                     continue
                 _, top_pos = torch.topk(row, k=top_k, largest=True, sorted=True)
-                out_adj[batch_idx, src_idx] = 0.0
-                out_adj[batch_idx, src_idx, top_pos] = row[top_pos]
+                out_adj[batch_idx, dst_idx] = 0.0
+                out_adj[batch_idx, dst_idx, top_pos] = row[top_pos]
 
                 if symmetric:
                     continue
 
-                src_nodes = torch.full((top_pos.numel(),), src_idx, device=current_adj.device, dtype=torch.long) + batch_idx * num_nodes
-                dst_nodes = top_pos + batch_idx * num_nodes
+                src_nodes = top_pos + batch_idx * num_nodes
+                dst_nodes = torch.full((top_pos.numel(),), dst_idx, device=current_adj.device, dtype=torch.long) + batch_idx * num_nodes
                 selected_rows.append((src_nodes, dst_nodes, row[top_pos]))
 
         if symmetric:
             out_adj = torch.maximum(out_adj, out_adj.transpose(-1, -2))
             selected_rows = []
             for batch_idx in range(batch_size):
-                for src_idx in range(num_nodes):
-                    row = out_adj[batch_idx, src_idx].clone()
-                    row[src_idx] = 0.0
+                for dst_idx in range(num_nodes):
+                    row = out_adj[batch_idx, dst_idx].clone()
+                    row[dst_idx] = 0.0
                     pos = torch.nonzero(row, as_tuple=False).flatten()
                     if pos.numel() == 0:
                         selected_rows.append((
@@ -192,8 +193,8 @@ class FutureSpatialDependencyGenerator(nn.Module):
                             torch.empty((0,), device=current_adj.device, dtype=current_adj.dtype),
                         ))
                         continue
-                    src_nodes = torch.full((pos.numel(),), src_idx, device=current_adj.device, dtype=torch.long) + batch_idx * num_nodes
-                    dst_nodes = pos + batch_idx * num_nodes
+                    src_nodes = pos + batch_idx * num_nodes
+                    dst_nodes = torch.full((pos.numel(),), dst_idx, device=current_adj.device, dtype=torch.long) + batch_idx * num_nodes
                     selected_rows.append((src_nodes, dst_nodes, row[pos]))
 
         return out_adj, selected_rows
@@ -209,11 +210,8 @@ class FutureSpatialDependencyGenerator(nn.Module):
     ) -> torch.Tensor:
         """Build one dense future adjacency matrix for a single horizon.
 
-        The method first narrows each source node to a horizon-aware candidate pool, predicts
-        residual updates only for those candidates, and writes those updates back into the full
-        adjacency row. After all candidate updates are applied, it selects the strongest Top-K
-        edges for that row and zeros all non-selected entries, returning a dense future graph
-        whose row-wise sparsity matches the final end-of-pipeline Top-K rule.
+        Each destination row is narrowed to likely source nodes, scored, and pruned to its
+        strongest incoming Top-K edges. The result uses ``A_in[dst, src]`` layout.
         """
         out_adj, _ = self._rowwise_residual_update(z_h, current_adj, mlp, horizon_idx, num_horizons, symmetric=symmetric)
         return out_adj
@@ -229,12 +227,11 @@ class FutureSpatialDependencyGenerator(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return the sparse edge list for one horizon after final row-wise Top-K pruning.
 
-        Each source node evaluates only its horizon-aware candidate neighbors, predicts residual
-        updates for those candidates, and writes them into the full row. After that, the method
-        applies Top-K over the entire updated adjacency row and emits only the final selected
-        edges as an edge list for this horizon. This matches the dense graph exactly.
+        Each destination evaluates likely incoming source nodes and prunes the updated row to
+        Top-K. The returned edge indices use conventional ``[src, dst]`` ordering and exactly
+        represent the corresponding dense receiver-row graph.
         """
-        out_adj, selected_rows = self._rowwise_residual_update(z_h, current_adj, mlp, horizon_idx, num_horizons, symmetric=symmetric)
+        _, selected_rows = self._rowwise_residual_update(z_h, current_adj, mlp, horizon_idx, num_horizons, symmetric=symmetric)
 
         if symmetric:
             edge_index_blocks = []
@@ -290,7 +287,7 @@ class FutureSpatialDependencyGenerator(nn.Module):
 
         Args:
             z_graph: Latent node embeddings of shape [B, H, N, C].
-            current_adj: Dense current adjacency matrix of shape [B, N, N].
+            current_adj: Dense incoming adjacency matrix [B, N, N], indexed [dst, src].
             mlp: Residual scoring network for the relevant graph branch.
 
         Returns:
@@ -323,8 +320,8 @@ class FutureSpatialDependencyGenerator(nn.Module):
         """Predict a per-horizon sparse edge-list representation.
 
         Each horizon independently scores only its candidate neighbors, keeps the strongest
-        Top-K edges per source node, and returns the result as a structured list indexed by
-        horizon. This preserves horizon identity without flattening all future graphs together.
+        Top-K incoming edges per destination node, and returns standard [src, dst] edge
+        indices in a structured list indexed by horizon.
         """
         if z_graph.dim() != 4:
             raise ValueError(f"Expected z_graph [B, H, N, C], got {tuple(z_graph.shape)}")
@@ -349,13 +346,13 @@ class FutureSpatialDependencyGenerator(nn.Module):
         """Predict future wind and semantic graphs from dense current adjacency matrices.
 
         For each horizon, the model first narrows the search space to a candidate pool of the
-        most likely neighbors, scores residual updates only on those candidates, and keeps the
-        strongest Top-K edges per source node. Returned graphs may be dense or sparse depending
-        on the chosen output format.
+        most likely incoming neighbors, scores residual updates only on those candidates, and
+        keeps the strongest Top-K edges per destination. Dense matrices use [dst, src] layout;
+        sparse edge indices use [src, dst].
 
         Args:
             z_graph: Latent future states of shape [B, H, N, C].
-            a_wind_current_dense: Dense current wind adjacency matrix [B, N, N].
+            a_wind_current_dense: Dense incoming wind adjacency [B, N, N], indexed [dst, src].
             a_sem_current_dense: Dense current semantic adjacency matrix [B, N, N].
             return_sparse: If True, return a list of sparse edge-index/edge-weight pairs, one
                 per horizon; otherwise return dense future adjacency matrices [B, H, N, N].

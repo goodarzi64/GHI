@@ -160,7 +160,7 @@ Three adjacency types returned:
 3. **Wind (propagation)**:
    ```python
    wind_kernel = WindAdjacency(D_ij, Theta_ij)
-   A_wind = wind_kernel(wind_feats, sparse=False)  # [B,N,N]
+    A_wind = wind_kernel(wind_feats)  # dense [B,N,N]
    ```
 
 Convert to edge format:

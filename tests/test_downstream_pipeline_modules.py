@@ -5,8 +5,95 @@ import torch
 sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
 
 from Src.forecast_head import ForecastHead
+from Src.Graph_build import (
+    WindAdjacency,
+    build_dtw_adjacency,
+    build_dtw_graphs_from_timeseries,
+    build_wind_cloud_adjacency,
+)
 from Src.future_spatial_dependency import FutureSpatialDependencyGenerator
 from Src.future_spatial_propagation import CurrentStateRefinement, MultiGraphAdaptivePropagation
+
+
+def test_wind_adjacency_uses_receiver_rows():
+    distances = torch.tensor([[0.0, 1.0, 3.0], [2.0, 0.0, 1.0], [3.0, 2.0, 0.0]])
+    bearings = torch.zeros_like(distances)
+    wind_features = torch.tensor([[1.0, -torch.pi], [2.0, -torch.pi], [3.0, -torch.pi]])
+    module = WindAdjacency(distances, bearings, distance_scale=1.0, direction_scale=1.0)
+
+    actual = module(wind_features)
+    outgoing_weights = torch.exp(-distances) * torch.exp(torch.ones_like(distances))
+    outgoing_weights *= wind_features[:, 0].unsqueeze(1)
+    outgoing_weights.fill_diagonal_(0.0)
+    expected = outgoing_weights.T
+    expected = expected / (expected.sum(dim=-1, keepdim=True) + 1e-8)
+
+    assert torch.allclose(actual, expected)
+
+
+def test_wind_cloud_builder_returns_dense_and_topk_adjacencies():
+    distances = torch.tensor([[0.0, 1.0, 2.0], [1.0, 0.0, 1.0], [2.0, 1.0, 0.0]])
+    bearings = torch.zeros_like(distances)
+    wind_speed = torch.ones(2, 3)
+    wind_direction = torch.full((2, 3), -torch.pi)
+
+    result = build_wind_cloud_adjacency(
+        distances,
+        bearings,
+        wind_speed,
+        wind_direction,
+        k=1,
+    )
+
+    assert set(result) == {"A_wind", "A_topk"}
+    assert result["A_wind"].shape == (2, 3, 3)
+    assert result["A_topk"].shape == (2, 3, 3)
+    assert (result["A_wind"] != 0).sum(dim=-1).eq(2).all()
+    assert (result["A_topk"] != 0).sum(dim=-1).eq(1).all()
+
+
+def test_wind_cloud_zero_cover_removes_source_edges():
+    distances = torch.tensor([[0.0, 1.0, 2.0], [1.0, 0.0, 1.0], [2.0, 1.0, 0.0]])
+    bearings = torch.zeros_like(distances)
+    wind_speed = torch.ones(3)
+    wind_direction = torch.full((3,), -torch.pi)
+    cloud_cover = torch.tensor([0.0, 1.0, 1.0])
+
+    result = build_wind_cloud_adjacency(
+        distances,
+        bearings,
+        wind_speed,
+        wind_direction,
+        tcc=cloud_cover,
+        k=1,
+    )
+
+    assert result["A_wind"][..., 0].eq(0).all()
+
+
+def test_dtw_builders_return_distances_and_optional_topk_only():
+    windows = torch.tensor([[[0.0], [1.0]], [[1.0], [2.0]], [[3.0], [4.0]]])
+    adjacency = build_dtw_adjacency(windows)
+
+    assert set(adjacency) == {"A_dtw"}
+    assert adjacency["A_dtw"].shape == (3, 3)
+
+    timeseries = windows.transpose(0, 1)
+    graph_series = build_dtw_graphs_from_timeseries(
+        timeseries,
+        L=1,
+        k=1,
+        topk_sym=True,
+    )
+
+    assert set(graph_series) == {"A_dtw", "A_topk"}
+    assert graph_series["A_dtw"].shape == (2, 3, 3)
+    assert graph_series["A_topk"].shape == (2, 3, 3)
+    assert torch.allclose(
+        graph_series["A_topk"],
+        graph_series["A_topk"].transpose(-1, -2),
+    )
+    assert (graph_series["A_topk"] != 0).sum(dim=-1).ge(1).all()
 
 
 def test_downstream_pipeline_modules():
@@ -101,6 +188,42 @@ def test_future_spatial_dependency_dense_keeps_only_k_final_edges_per_row():
 
     nonzero_per_row = (a_wind_hat[0, 0] != 0).float().sum(dim=1)
     assert (nonzero_per_row <= 2).all()
+
+
+def test_future_wind_topk_selects_incoming_sources_and_sparse_edges_match_dense():
+    graph_gen = FutureSpatialDependencyGenerator(latent_dim=2, residual_scale=0.0, k=1)
+    z_graph = torch.zeros(1, 1, 3, 2)
+    incoming = torch.tensor([[[0.0, 0.8, 0.2], [0.1, 0.0, 0.9], [0.7, 0.3, 0.0]]])
+    semantic = torch.zeros_like(incoming)
+
+    wind_dense, _ = graph_gen(z_graph, incoming, semantic, return_sparse=False)
+    wind_sparse, _ = graph_gen(z_graph, incoming, semantic, return_sparse=True)
+    edge_index, edge_weight = wind_sparse[0]
+
+    reconstructed = torch.zeros_like(wind_dense[0, 0])
+    reconstructed[edge_index[1], edge_index[0]] = edge_weight
+    assert torch.equal(reconstructed, wind_dense[0, 0])
+    assert torch.equal(edge_index[0], torch.tensor([1, 2, 0]))
+    assert torch.equal(edge_index[1], torch.tensor([0, 1, 2]))
+
+
+def test_propagator_aggregates_incoming_rows_at_destination():
+    class WindOnlyGate(torch.nn.Module):
+        def forward(self, hidden, phys, wind, sem, horizon):
+            ones = torch.ones_like(hidden)
+            zeros = torch.zeros_like(hidden)
+            return zeros, ones, zeros
+
+    propagator = MultiGraphAdaptivePropagation(
+        channels=1, num_horizons=1, propagation_steps=1, alpha=0.0, dropout=0.0, use_refinement=False
+    )
+    propagator.gate = WindOnlyGate()
+    incoming = torch.zeros(1, 1, 3, 3)
+    incoming[0, 0, 1, 0] = 1.0
+    hidden = torch.tensor([[[2.0], [5.0], [9.0]]])
+
+    result = propagator(hidden, torch.zeros(3, 3), incoming, torch.zeros_like(incoming))
+    assert torch.equal(result[0, 0, :, 0], torch.tensor([0.0, 2.0, 0.0]))
 
 
 def test_propagation_accepts_sparse_future_graphs():
