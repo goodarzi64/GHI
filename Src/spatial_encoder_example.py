@@ -181,6 +181,7 @@ def prepare_adjacency_matrices(
     """
     try:
         from Graph_build import (
+            build_geo_matrices,
             build_static_adjacency,
             build_semantic_adjacency,
             WindAdjacency,
@@ -193,8 +194,13 @@ def prepare_adjacency_matrices(
     
     # 1. Static graph (geographic distance)
     if df_geo is not None:
-        static_adj = build_static_adjacency(df_geo=df_geo, device=device, k=5)
-        A_static = static_adj['A_sym_norm']  # Use symmetric normalized
+        geo_mats = build_geo_matrices(df_geo=df_geo, device=device)
+        static_adj = build_static_adjacency(
+            dist_matrix=geo_mats['dist_matrix'],
+            k=5,
+            topk_sym=True,
+        )
+        A_static = static_adj['A_topk']
     else:
         # Fallback: fully connected
         N = 10  # placeholder

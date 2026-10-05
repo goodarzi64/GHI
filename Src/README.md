@@ -47,7 +47,7 @@ Multi-graph spatial encoder using **GATv2** (Graph Attention Networks v2) with l
 import torch
 from spatial_gatv2_encoder import SpatialGATv2EncoderBatched
 from fusion_module import SpatialFusionModule
-from Graph_build import build_static_adjacency, build_semantic_adjacency
+from Graph_build import build_geo_matrices, build_static_adjacency, build_semantic_adjacency
 
 # Initialize encoder (3 GATv2 layers, one per graph)
 encoder = SpatialGATv2EncoderBatched(
@@ -149,7 +149,10 @@ Three adjacency types returned:
 
 1. **Static (geographic)**:
    ```python
-   A_static = build_static_adjacency(df_geo=df_geo, k=5)['A_sym_norm']
+    geo_mats = build_geo_matrices(df_geo)
+       A_static = build_static_adjacency(
+           dist_matrix=geo_mats['dist_matrix'], k=5, topk_sym=True
+       )['A_topk']
    ```
 
 2. **Semantic (temporal coherence)**:

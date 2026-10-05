@@ -5,7 +5,7 @@ from typing import Dict, Tuple
 import numpy as np
 import torch
 
-from .GST_Utils import row_normalize, symmetry_normalize, topk_row
+from .GST_Utils import topk_row
 import torch.nn as nn
 
 try:
@@ -146,8 +146,7 @@ def build_geo_matrices(df_geo, device: str = "cpu") -> Dict[str, torch.Tensor]:
     }
 
 def build_static_adjacency(
-    df_geo=None,
-    device: str = "cpu",
+    dist_matrix: torch.Tensor,
     k: int = 5,
     self_loops: bool = False,
     topk_sym: bool = False,
@@ -157,11 +156,9 @@ def build_static_adjacency(
 
     Parameters
     ----------
-    df_geo
-        Optional geographic table with ``latitude`` and ``longitude`` columns;
-        used to calculate matrices when ``dist_matrix`` is omitted.
-    device : str, default="cpu"
-        Device used when geographic matrices need to be computed.
+    dist_matrix : torch.Tensor
+        Pairwise geographic distances in kilometers with shape ``[N, N]``,
+        typically returned by :func:`build_geo_matrices`.
     k : int, default=5
         Number of neighbors retained per row in ``A_topk``.
     self_loops : bool, default=False
@@ -172,25 +169,18 @@ def build_static_adjacency(
     Returns
     -------
     Dict[str, torch.Tensor]
-        Always contains ``A_raw``, ``A_topk``(each ``[N, N]``). If ``df_geo`` was used, also
-        contains ``dist_matrix`` and ``theta_matrix`` (each ``[N, N]``).
+        Contains ``A_stat`` and ``A_topk``, each with shape ``[N, N]``.
     """
-    geo_mats = None
-    if df_geo is None:
-        raise ValueError("Provide  `df_geo`.")
-    geo_mats = build_geo_matrices(df_geo=df_geo, device=device)
-    dist_matrix = geo_mats["dist_matrix"]
+    if dist_matrix.ndim != 2 or dist_matrix.shape[0] != dist_matrix.shape[1]:
+        raise ValueError("`dist_matrix` must be a square [N, N] tensor.")
 
     kernel = DistanceKernel(dist_matrix, sigma=None)
-    A_raw = kernel.compute(self_loops=self_loops)
+    A_stat = kernel.compute(self_loops=self_loops)
 
     out = {
-        "A_raw": A_raw,
-        "A_topk": topk_row(A_raw, k=k, sym=topk_sym, eps=1e-8, preserve_diagonal=self_loops),
+        "A_stat": A_stat,
+        "A_topk": topk_row(A_stat, k=k, sym=topk_sym, eps=1e-8, preserve_diagonal=self_loops),
     }
-    if geo_mats is not None:
-        out["dist_matrix"] = geo_mats["dist_matrix"]
-        out["theta_matrix"] = geo_mats["theta_matrix"]
     return out
 
 #-------------------------------------------------------------------

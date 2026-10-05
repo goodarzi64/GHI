@@ -9,10 +9,21 @@ from Src.Graph_build import (
     WindAdjacency,
     build_dtw_adjacency,
     build_dtw_graphs_from_timeseries,
+    build_static_adjacency,
     build_wind_cloud_adjacency,
 )
 from Src.future_spatial_dependency import FutureSpatialDependencyGenerator
 from Src.future_spatial_propagation import CurrentStateRefinement, MultiGraphAdaptivePropagation
+
+
+def test_static_adjacency_accepts_precomputed_distances():
+    distances = torch.tensor([[0.0, 1.0, 2.0], [1.0, 0.0, 1.0], [2.0, 1.0, 0.0]])
+
+    result = build_static_adjacency(dist_matrix=distances, k=1, self_loops=True)
+
+    assert set(result) == {"A_raw", "A_topk"}
+    assert all(result[key].shape == (3, 3) for key in result)
+    assert torch.allclose(result["A_topk"], result["A_topk"].T)
 
 
 def test_wind_adjacency_uses_receiver_rows():
