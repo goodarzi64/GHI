@@ -830,10 +830,10 @@ def estimate_wind_kernel_scales(
     wind_dir = wind_dir.float()
 
     if wind_sp.ndim == 2 and wind_sp.shape[0] > _MAX_ESTIMATION_BATCH_COUNT:
-        wind_sp = wind_sp[::_ESTIMATION_STEP_HOURS][:_MAX_ESTIMATION_BATCH_COUNT]
-        wind_dir = wind_dir[::_ESTIMATION_STEP_HOURS][:_MAX_ESTIMATION_BATCH_COUNT]
+        wind_sp = wind_sp[:_MAX_ESTIMATION_BATCH_COUNT][::_ESTIMATION_STEP_HOURS]
+        wind_dir = wind_dir[:_MAX_ESTIMATION_BATCH_COUNT][::_ESTIMATION_STEP_HOURS]
         if tcc is not None and tcc.ndim == 2:
-            tcc = tcc[::_ESTIMATION_STEP_HOURS][:_MAX_ESTIMATION_BATCH_COUNT]
+            tcc = tcc[:_MAX_ESTIMATION_BATCH_COUNT][::_ESTIMATION_STEP_HOURS]
 
     if D_ij.ndim != 2 or D_ij.shape[0] != D_ij.shape[1]:
         raise ValueError("D_ij must have shape [N, N].")
