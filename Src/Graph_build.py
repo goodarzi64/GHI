@@ -802,8 +802,22 @@ class WindAdjacency(nn.Module):
         return A
 
 
-_ESTIMATION_STEP_HOURS = 20
-_MAX_ESTIMATION_BATCH_COUNT = 17520
+def _safe_quantile(
+    x: torch.Tensor,
+    q: float,
+    max_samples: int = 1_000_000,
+) -> torch.Tensor:
+    x = x.flatten()
+
+    if x.numel() > max_samples:
+        indices = torch.randint(
+            x.numel(),
+            (max_samples,),
+            device=x.device,
+        )
+        x = x[indices]
+
+    return torch.quantile(x, q)
 
 
 def estimate_wind_kernel_scales(
@@ -828,12 +842,6 @@ def estimate_wind_kernel_scales(
     Theta_ij = Theta_ij.float()
     wind_sp = wind_sp.float()
     wind_dir = wind_dir.float()
-
-    if wind_sp.ndim == 2 and wind_sp.shape[0] > _MAX_ESTIMATION_BATCH_COUNT:
-        wind_sp = wind_sp[:_MAX_ESTIMATION_BATCH_COUNT][::_ESTIMATION_STEP_HOURS]
-        wind_dir = wind_dir[:_MAX_ESTIMATION_BATCH_COUNT][::_ESTIMATION_STEP_HOURS]
-        if tcc is not None and tcc.ndim == 2:
-            tcc = tcc[:_MAX_ESTIMATION_BATCH_COUNT][::_ESTIMATION_STEP_HOURS]
 
     if D_ij.ndim != 2 or D_ij.shape[0] != D_ij.shape[1]:
         raise ValueError("D_ij must have shape [N, N].")
@@ -876,7 +884,7 @@ def estimate_wind_kernel_scales(
             "D_ij contains no positive off-diagonal distances."
         )
 
-    distance_scale = torch.quantile(
+    distance_scale = _safe_quantile(
         distances,
         distance_quantile,
     )
@@ -886,8 +894,7 @@ def estimate_wind_kernel_scales(
         wind_dir = wind_dir.unsqueeze(0)
     wind_to = (wind_dir + torch.pi) % (2.0 * torch.pi)
     batch_count, node_count = wind_sp.shape
-    directed_count = batch_count * node_count * (node_count - 1)
-    if directed_count == 0:
+    if node_count < 2:
         raise ValueError("Theta_ij contains no off-diagonal directions.")
 
     angular_difference = WindAdjacency.angdiff(
@@ -902,12 +909,12 @@ def estimate_wind_kernel_scales(
     angular_difference = angular_difference[:, off_diagonal_mask]
 
     directional_error = 1.0 - torch.cos(angular_difference).clamp(min=0.0)
-    direction_scale = torch.quantile(
-        directional_error.reshape(-1),
+    direction_scale = _safe_quantile(
+        directional_error,
         direction_quantile,
     )
-    wind_speed_scale = torch.quantile(
-        wind_sp.clamp(min=0.0).reshape(-1),
+    wind_speed_scale = _safe_quantile(
+        wind_sp.clamp(min=0.0),
         wind_speed_quantile,
     )
 
@@ -922,7 +929,7 @@ def estimate_wind_kernel_scales(
         if cloud_cover.numel() == 0:
             raise ValueError("tcc is empty.")
 
-        cloud_cover_scale = torch.quantile(
+        cloud_cover_scale = _safe_quantile(
             cloud_cover,
             cloud_cover_quantile,
         )
