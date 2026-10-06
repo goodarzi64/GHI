@@ -802,7 +802,7 @@ class WindAdjacency(nn.Module):
         return A
 
 
-_ESTIMATION_STEP_HOURS = 2
+_ESTIMATION_STEP_HOURS = 20
 _MAX_ESTIMATION_BATCH_COUNT = 17520
 
 
