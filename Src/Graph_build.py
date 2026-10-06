@@ -803,7 +803,7 @@ class WindAdjacency(nn.Module):
 
 
 _ESTIMATION_STEP_HOURS = 2
-_MAX_ESTIMATION_BATCH_COUNT = 17_520
+_MAX_ESTIMATION_BATCH_COUNT = 17520
 
 
 def estimate_wind_kernel_scales(
