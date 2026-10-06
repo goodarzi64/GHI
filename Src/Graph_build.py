@@ -806,22 +806,37 @@ def _safe_quantile(
     x: torch.Tensor,
     q: float,
     name: str,
-    max_samples: int = 1_00,
+    max_samples: int = 10_000,
 ) -> torch.Tensor:
-    x = x.flatten()
+    """
+    Estimate a quantile from at most max_samples randomly selected values.
+
+    Sampling is performed before quantile computation so that torch.quantile()
+    never receives a very large tensor.
+    """
+    x = x.reshape(-1)
+
     total_samples = x.numel()
 
-    if x.numel() > max_samples:
+    if total_samples == 0:
+        raise ValueError(f"{name} contains no valid samples.")
+
+    if total_samples > max_samples:
         indices = torch.randint(
-            x.numel(),
-            (max_samples,),
+            low=0,
+            high=total_samples,
+            size=(max_samples,),
             device=x.device,
         )
         x = x[indices]
 
-    print(f"{name} scale estimation: using {x.numel()} of {total_samples} samples")
-    return torch.quantile(x, q)
+    print(
+        f"{name} scale estimation: "
+        f"using {x.numel():,} of {total_samples:,} samples"
+    )
 
+    # Quantile now operates on at most max_samples elements.
+    return torch.quantile(x, q)
 
 def estimate_wind_kernel_scales(
     D_ij: torch.Tensor,
