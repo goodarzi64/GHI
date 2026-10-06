@@ -800,18 +800,146 @@ class WindAdjacency(nn.Module):
             A = A[0]
 
         return A
-    
+
+
+def estimate_wind_kernel_scales(
+    D_ij: torch.Tensor,
+    Theta_ij: torch.Tensor,
+    wind_sp: torch.Tensor,
+    wind_dir: torch.Tensor,
+    tcc: torch.Tensor | None = None,
+    distance_quantile: float = 0.50,
+    direction_quantile: float = 0.50,
+    wind_speed_quantile: float = 0.50,
+    cloud_cover_quantile: float = 0.50,
+) -> dict[str, float]:
+    """Estimate scales used by :class:`WindAdjacency`.
+
+    The distance scale is estimated from unique unordered pairs because
+    ``D_ij`` is symmetric. The direction scale is estimated from all directed
+    off-diagonal entries because ``Theta_ij`` is asymmetric. Batched wind
+    features are aggregated across all batches before quantile estimation.
+    """
+    D_ij = D_ij.float()
+    Theta_ij = Theta_ij.float()
+    wind_sp = wind_sp.float()
+    wind_dir = wind_dir.float()
+
+    if D_ij.ndim != 2 or D_ij.shape[0] != D_ij.shape[1]:
+        raise ValueError("D_ij must have shape [N, N].")
+
+    if Theta_ij.shape != D_ij.shape:
+        raise ValueError("Theta_ij must have the same shape as D_ij.")
+
+    if wind_sp.ndim not in (1, 2) or wind_dir.ndim not in (1, 2):
+        raise ValueError("wind_sp and wind_dir must have shape [N] or [B, N].")
+
+    if wind_sp.shape != wind_dir.shape or wind_sp.shape[-1] != D_ij.shape[0]:
+        raise ValueError("wind_sp and wind_dir must have the same shape [N] or [B, N].")
+
+    if tcc is not None:
+        tcc = tcc.float()
+        if tcc.ndim == 1:
+            if wind_sp.ndim == 2:
+                tcc = tcc.unsqueeze(0).expand(wind_sp.shape[0], -1)
+        if tcc.ndim != wind_sp.ndim or tcc.shape != wind_sp.shape:
+            raise ValueError("tcc must have shape [N] or [B, N].")
+
+    quantiles = (
+        distance_quantile,
+        direction_quantile,
+        wind_speed_quantile,
+        cloud_cover_quantile,
+    )
+    if any(not 0.0 <= q <= 1.0 for q in quantiles):
+        raise ValueError("All quantiles must be in the interval [0, 1].")
+
+    upper_mask = torch.triu(
+        torch.ones_like(D_ij, dtype=torch.bool),
+        diagonal=1,
+    )
+    distances = D_ij[upper_mask].clamp(min=0.0)
+    distances = distances[distances > 0.0]
+
+    if distances.numel() == 0:
+        raise ValueError(
+            "D_ij contains no positive off-diagonal distances."
+        )
+
+    distance_scale = torch.quantile(
+        distances,
+        distance_quantile,
+    )
+
+    wind_to = (wind_dir + torch.pi) % (2.0 * torch.pi)
+    if wind_sp.ndim == 1:
+        angular_difference = WindAdjacency.angdiff(
+            Theta_ij,
+            wind_to.unsqueeze(-1),
+        )
+    else:
+        angular_difference = WindAdjacency.angdiff(
+            Theta_ij.unsqueeze(0).expand(wind_sp.shape[0], -1, -1),
+            wind_to.unsqueeze(-1),
+        )
+
+    directional_error = 1.0 - torch.cos(angular_difference).clamp(min=0.0)
+
+    off_diagonal_mask = torch.ones_like(
+        D_ij,
+        dtype=torch.bool,
+    )
+    off_diagonal_mask.fill_diagonal_(0)
+    directional_error = directional_error.reshape(
+        -1,
+        D_ij.numel(),
+    )[:, off_diagonal_mask.reshape(-1)]
+
+    if directional_error.numel() == 0:
+        raise ValueError(
+            "Theta_ij contains no off-diagonal directions."
+        )
+
+    direction_scale = torch.quantile(
+        directional_error.reshape(-1),
+        direction_quantile,
+    )
+    wind_speed_scale = torch.quantile(
+        wind_sp.clamp(min=0.0).reshape(-1),
+        wind_speed_quantile,
+    )
+
+    scales: dict[str, float] = {
+        "distance_scale": float(distance_scale),
+        "direction_scale": float(direction_scale),
+        "wind_speed_scale": float(wind_speed_scale),
+    }
+
+    if tcc is not None:
+        cloud_cover = tcc.clamp(min=0.0, max=1.0).reshape(-1)
+        if cloud_cover.numel() == 0:
+            raise ValueError("tcc is empty.")
+
+        cloud_cover_scale = torch.quantile(
+            cloud_cover,
+            cloud_cover_quantile,
+        )
+        scales["cloud_cover_scale"] = float(cloud_cover_scale)
+
+    return scales
+
+
 def build_wind_cloud_adjacency(
     D_ij: torch.Tensor,
     Theta_ij: torch.Tensor,
     wind_sp: torch.Tensor,
     wind_dir: torch.Tensor,
     tcc: torch.Tensor | None = None,
-    distance_scale: float = 150.0,
-    direction_scale: float = 1.0,
+    distance_scale: float | None = None,
+    direction_scale: float | None = None,
     cone_half_angle: float | None = None,
-    wind_speed_scale: float = 5.0,
-    cloud_cover_scale: float = 0.5,
+    wind_speed_scale: float | None = None,
+    cloud_cover_scale: float | None = None,
     k: int = 5,
     self_loops: bool = False,
     topk_sym: bool = False,
@@ -826,16 +954,17 @@ def build_wind_cloud_adjacency(
     wind_sp : [N] or [B, N] tensor of wind speeds.
     wind_dir : [N] or [B, N] tensor of wind directions in radians.
     tcc : [N] or [B, N] tensor of cloud cover values. Optional.
-    distance_scale : float
-        Distance decay scale.
-    direction_scale : float
-        Wind alignment sharpness.
+    distance_scale : float | None
+        Distance decay scale. If None, estimate it from ``D_ij``.
+    direction_scale : float | None
+        Wind alignment sharpness. If None, estimate it from ``Theta_ij``.
     cone_half_angle : float | None
         If set, restricts edges to nodes within the wind cone.
-    wind_speed_scale : float
-        Wind-speed response scale.
-    cloud_cover_scale : float
-        Cloud-cover response scale.
+    wind_speed_scale : float | None
+        Wind-speed response scale. If None, estimate it from ``wind_sp``.
+    cloud_cover_scale : float | None
+        Cloud-cover response scale. If None and ``tcc`` is provided,
+        estimate it from ``tcc``.
     k : int
         Number of neighbors to keep in ``A_topk``.
     self_loops : bool
@@ -859,6 +988,39 @@ def build_wind_cloud_adjacency(
         wind_sp = wind_sp.unsqueeze(0)
     if wind_dir.dim() == 1:
         wind_dir = wind_dir.unsqueeze(0)
+
+    estimated_scales = estimate_wind_kernel_scales(
+        D_ij=D_ij,
+        Theta_ij=Theta_ij,
+        wind_sp=wind_sp,
+        wind_dir=wind_dir,
+        tcc=tcc,
+    )
+    print(f"Estimated wind kernel scales: {estimated_scales}")
+
+    distance_scale = (
+        estimated_scales["distance_scale"]
+        if distance_scale is None
+        else distance_scale
+    )
+    direction_scale = (
+        estimated_scales["direction_scale"]
+        if direction_scale is None
+        else direction_scale
+    )
+    wind_speed_scale = (
+        estimated_scales["wind_speed_scale"]
+        if wind_speed_scale is None
+        else wind_speed_scale
+    )
+    if tcc is not None:
+        cloud_cover_scale = (
+            estimated_scales["cloud_cover_scale"]
+            if cloud_cover_scale is None
+            else cloud_cover_scale
+        )
+    else:
+        cloud_cover_scale = 0.5 if cloud_cover_scale is None else cloud_cover_scale
 
     if tcc is not None:
         tcc = tcc.float()

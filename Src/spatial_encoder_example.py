@@ -184,6 +184,7 @@ def prepare_adjacency_matrices(
             build_geo_matrices,
             build_static_adjacency,
             build_semantic_adjacency,
+            estimate_wind_kernel_scales,
             WindAdjacency,
         )
     except ImportError:
@@ -239,8 +240,14 @@ def prepare_adjacency_matrices(
             N = wind_features.shape[0]
             D_ij = torch.ones(N, N, device=device)
             Theta_ij = torch.zeros(N, N, device=device)
-        
-        wind_kernel = WindAdjacency(D_ij, Theta_ij).to(device)
+
+        scales = estimate_wind_kernel_scales(
+            D_ij=D_ij,
+            Theta_ij=Theta_ij,
+            wind_sp=wind_features[..., 0],
+            wind_dir=wind_features[..., 1],
+        )
+        wind_kernel = WindAdjacency(D_ij, Theta_ij, **scales).to(device)
         A_wind = wind_kernel(wind_features[None, ...])  # [1, N, N]
         A_wind = A_wind[0]  # [N, N]
     else:

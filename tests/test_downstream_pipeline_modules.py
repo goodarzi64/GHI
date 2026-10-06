@@ -11,6 +11,7 @@ from Src.Graph_build import (
     build_dtw_graphs_from_timeseries,
     build_static_adjacency,
     build_wind_cloud_adjacency,
+    estimate_wind_kernel_scales,
 )
 from Src.future_spatial_dependency import FutureSpatialDependencyGenerator
 from Src.future_spatial_propagation import CurrentStateRefinement, MultiGraphAdaptivePropagation
@@ -40,6 +41,41 @@ def test_wind_adjacency_uses_receiver_rows():
     expected = expected / (expected.sum(dim=-1, keepdim=True) + 1e-8)
 
     assert torch.allclose(actual, expected)
+
+
+def test_estimate_wind_kernel_scales_uses_directed_angles():
+    distances = torch.tensor([
+        [0.0, 2.0, 4.0],
+        [2.0, 0.0, 3.0],
+        [4.0, 3.0, 0.0],
+    ])
+    bearings = torch.tensor([
+        [0.0, 0.0, 0.0],
+        [torch.pi, 0.0, 0.0],
+        [torch.pi / 2, torch.pi / 2, 0.0],
+    ])
+    wind_speed = torch.tensor([1.0, 2.0, 3.0])
+    wind_direction = torch.tensor([0.0, torch.pi, torch.pi / 2])
+    cloud_cover = torch.tensor([0.2, 0.4, 0.6])
+
+    scales = estimate_wind_kernel_scales(
+        distances,
+        bearings,
+        wind_speed,
+        wind_direction,
+        cloud_cover,
+    )
+
+    assert set(scales) == {
+        "distance_scale",
+        "direction_scale",
+        "wind_speed_scale",
+        "cloud_cover_scale",
+    }
+    assert scales["distance_scale"] == 3.0
+    assert scales["wind_speed_scale"] == 2.0
+    assert abs(scales["cloud_cover_scale"] - 0.4) < 1e-6
+    assert scales["direction_scale"] > 0.0
 
 
 def test_wind_cloud_builder_returns_dense_and_topk_adjacencies():

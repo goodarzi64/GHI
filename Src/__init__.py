@@ -7,6 +7,7 @@ from .Graph_build import (
     build_wind_cloud_adjacency,
     build_dtw_adjacency,
     build_dtw_graphs_from_timeseries,
+    estimate_wind_kernel_scales,
     WindAdjacency,
 )
 from .data_splits import (
@@ -36,6 +37,7 @@ __all__ = [
     "build_wind_cloud_adjacency",
     "build_dtw_adjacency",
     "build_dtw_graphs_from_timeseries",
+    "estimate_wind_kernel_scales",
     "WindAdjacency",
     "SplitArrays",
     "TemporalFold",
