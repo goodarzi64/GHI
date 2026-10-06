@@ -802,6 +802,7 @@ class WindAdjacency(nn.Module):
         return A
 
 
+```python
 def _safe_quantile(
     x: torch.Tensor,
     q: float,
@@ -809,10 +810,19 @@ def _safe_quantile(
     max_samples: int = 10_000,
 ) -> torch.Tensor:
     """
-    Estimate a quantile from at most max_samples randomly selected values.
+    Estimate a quantile from at most ``max_samples`` randomly selected values.
 
-    Sampling is performed before quantile computation so that torch.quantile()
-    never receives a very large tensor.
+    The input is flattened and sampled before ``torch.quantile`` is called,
+    preventing quantile computation from operating on very large tensors.
+
+    Args:
+        x: Input tensor containing scalar observations.
+        q: Quantile in [0, 1].
+        name: Name used in the diagnostic message.
+        max_samples: Maximum number of values passed to torch.quantile.
+
+    Returns:
+        Scalar tensor containing the estimated quantile.
     """
     x = x.reshape(-1)
 
@@ -828,15 +838,15 @@ def _safe_quantile(
             size=(max_samples,),
             device=x.device,
         )
-        x = x[indices]
+        x = x.index_select(0, indices)
 
     print(
         f"{name} scale estimation: "
         f"using {x.numel():,} of {total_samples:,} samples"
     )
 
-    # Quantile now operates on at most max_samples elements.
     return torch.quantile(x, q)
+
 
 def estimate_wind_kernel_scales(
     D_ij: torch.Tensor,
@@ -848,53 +858,140 @@ def estimate_wind_kernel_scales(
     direction_quantile: float = 0.50,
     wind_speed_quantile: float = 0.50,
     cloud_cover_quantile: float = 0.50,
+    max_samples: int = 10_000,
 ) -> dict[str, float]:
-    """Estimate scales used by :class:`WindAdjacency`.
-
-    The distance scale is estimated from unique unordered pairs because
-    ``D_ij`` is symmetric. The direction scale is estimated from all directed
-    off-diagonal entries because ``Theta_ij`` is asymmetric. Batched wind
-    features are aggregated across all batches before quantile estimation.
     """
+    Estimate fixed kernel scales for wind/cloud graph construction.
+
+    Expected input shapes:
+        D_ij:    [N, N]
+        Theta_ij:[N, N]
+        wind_sp: [T, N]
+        wind_dir:[T, N]
+        tcc:     [T, N] or None
+
+    The scale estimates are obtained from bounded random samples so that
+    the procedure remains memory-safe for long time series.
+
+    Returns:
+        Dictionary containing:
+            distance_scale
+            direction_scale
+            wind_speed_scale
+            cloud_cover_scale (if tcc is provided)
+    """
+
+    # ---------------------------------------------------------
+    # Convert to floating-point tensors
+    # ---------------------------------------------------------
     D_ij = D_ij.float()
     Theta_ij = Theta_ij.float()
     wind_sp = wind_sp.float()
     wind_dir = wind_dir.float()
 
-    if D_ij.ndim != 2 or D_ij.shape[0] != D_ij.shape[1]:
-        raise ValueError("D_ij must have shape [N, N].")
-
-    if Theta_ij.shape != D_ij.shape:
-        raise ValueError("Theta_ij must have the same shape as D_ij.")
-
-    if wind_sp.ndim not in (1, 2) or wind_dir.ndim not in (1, 2):
-        raise ValueError("wind_sp and wind_dir must have shape [N] or [B, N].")
-
-    if wind_sp.shape != wind_dir.shape or wind_sp.shape[-1] != D_ij.shape[0]:
-        raise ValueError("wind_sp and wind_dir must have the same shape [N] or [B, N].")
-
     if tcc is not None:
         tcc = tcc.float()
-        if tcc.ndim == 1:
-            if wind_sp.ndim == 2:
-                tcc = tcc.unsqueeze(0).expand(wind_sp.shape[0], -1)
-        if tcc.ndim != wind_sp.ndim or tcc.shape != wind_sp.shape:
-            raise ValueError("tcc must have shape [N] or [B, N].")
 
+    # ---------------------------------------------------------
+    # Validate geometry
+    # ---------------------------------------------------------
+    if D_ij.ndim != 2 or D_ij.shape[0] != D_ij.shape[1]:
+        raise ValueError(
+            f"D_ij must have shape [N, N], got {D_ij.shape}."
+        )
+
+    if Theta_ij.shape != D_ij.shape:
+        raise ValueError(
+            "Theta_ij must have the same shape as D_ij."
+        )
+
+    node_count = D_ij.shape[0]
+
+    if node_count < 2:
+        raise ValueError(
+            "At least two stations are required."
+        )
+
+    # ---------------------------------------------------------
+    # Validate temporal wind features
+    # ---------------------------------------------------------
+    if wind_sp.ndim != 2 or wind_dir.ndim != 2:
+        raise ValueError(
+            "wind_sp and wind_dir must have shape [T, N]."
+        )
+
+    if wind_sp.shape != wind_dir.shape:
+        raise ValueError(
+            f"wind_sp and wind_dir must have the same shape; "
+            f"got {wind_sp.shape} and {wind_dir.shape}."
+        )
+
+    if wind_sp.shape[1] != node_count:
+        raise ValueError(
+            f"Wind features contain {wind_sp.shape[1]} stations, "
+            f"but geometry contains {node_count} stations."
+        )
+
+    time_count = wind_sp.shape[0]
+
+    if time_count == 0:
+        raise ValueError(
+            "Wind features contain no time instances."
+        )
+
+    # ---------------------------------------------------------
+    # Validate cloud cover
+    # ---------------------------------------------------------
+    if tcc is not None:
+        if tcc.ndim != 2:
+            raise ValueError(
+                f"tcc must have shape [T, N], got {tcc.shape}."
+            )
+
+        if tcc.shape != wind_sp.shape:
+            raise ValueError(
+                f"tcc must have the same shape as wind features; "
+                f"got {tcc.shape} and {wind_sp.shape}."
+            )
+
+    # ---------------------------------------------------------
+    # Validate quantiles
+    # ---------------------------------------------------------
     quantiles = (
         distance_quantile,
         direction_quantile,
         wind_speed_quantile,
         cloud_cover_quantile,
     )
+
     if any(not 0.0 <= q <= 1.0 for q in quantiles):
-        raise ValueError("All quantiles must be in the interval [0, 1].")
+        raise ValueError(
+            "All quantiles must be in the interval [0, 1]."
+        )
+
+    if max_samples <= 0:
+        raise ValueError(
+            "max_samples must be positive."
+        )
+
+    # =========================================================
+    # 1. Distance scale
+    # =========================================================
+    #
+    # D_ij is symmetric, therefore only unique unordered pairs
+    # are used.
+    # =========================================================
 
     upper_mask = torch.triu(
-        torch.ones_like(D_ij, dtype=torch.bool),
+        torch.ones_like(
+            D_ij,
+            dtype=torch.bool,
+        ),
         diagonal=1,
     )
-    distances = D_ij[upper_mask].clamp(min=0.0)
+
+    distances = D_ij[upper_mask]
+    distances = distances.clamp(min=0.0)
     distances = distances[distances > 0.0]
 
     if distances.numel() == 0:
@@ -906,67 +1003,108 @@ def estimate_wind_kernel_scales(
         distances,
         distance_quantile,
         "Distance",
+        max_samples=max_samples,
     )
 
-    if wind_sp.ndim == 1:
-        wind_sp = wind_sp.unsqueeze(0)
-        wind_dir = wind_dir.unsqueeze(0)
-    wind_to = (wind_dir + torch.pi) % (2.0 * torch.pi)
-    batch_count, node_count = wind_sp.shape
-    if node_count < 2:
-        raise ValueError("Theta_ij contains no off-diagonal directions.")
+    # =========================================================
+    # 2. Direction scale
+    # =========================================================
+    #
+    # wind_dir is [T,N].
+    #
+    # Instead of constructing [T,N,N] angular differences,
+    # randomly sample directed (time, destination, source)
+    # combinations first.
+    # =========================================================
 
-    # ---------------------------------------------------------
-    # Direction-scale estimation
-    # Sample directed (batch, destination, source) pairs before
-    # constructing the pairwise angular-difference tensor.
-    # ---------------------------------------------------------
-    num_direction_samples = min(100, batch_count * node_count * (node_count - 1))
+    wind_to = (
+        wind_dir + torch.pi
+    ) % (2.0 * torch.pi)
+
+    total_direction_pairs = (
+        time_count
+        * node_count
+        * (node_count - 1)
+    )
+
+    num_direction_samples = min(
+        max_samples,
+        total_direction_pairs,
+    )
 
     if num_direction_samples == 0:
-        raise ValueError("No valid off-diagonal direction pairs.")
+        raise ValueError(
+            "No valid directed station pairs are available."
+        )
 
-    batch_idx = torch.randint(
-        batch_count,
-        (num_direction_samples,),
+    time_idx = torch.randint(
+        low=0,
+        high=time_count,
+        size=(num_direction_samples,),
         device=wind_sp.device,
     )
 
     dst_idx = torch.randint(
-        node_count,
-        (num_direction_samples,),
+        low=0,
+        high=node_count,
+        size=(num_direction_samples,),
         device=wind_sp.device,
     )
 
+    # Generate a source index from [0, N-2] and shift it when
+    # necessary so that source != destination.
     src_idx = torch.randint(
-        node_count - 1,
-        (num_direction_samples,),
+        low=0,
+        high=node_count - 1,
+        size=(num_direction_samples,),
         device=wind_sp.device,
     )
 
-    # Map src_idx so that src != dst
-    src_idx = src_idx + (src_idx >= dst_idx).long()
+    src_idx = src_idx + (
+        src_idx >= dst_idx
+    ).long()
 
-    theta = Theta_ij[dst_idx, src_idx]
-    wind_to_sample = wind_to[batch_idx, dst_idx]
+    theta_sample = Theta_ij[
+        dst_idx,
+        src_idx,
+    ]
+
+    wind_to_sample = wind_to[
+        time_idx,
+        dst_idx,
+    ]
 
     angular_difference = WindAdjacency.angdiff(
-        theta,
+        theta_sample,
         wind_to_sample,
     )
 
-    directional_error = 1.0 - torch.cos(angular_difference).clamp(min=0.0)
+    directional_error = (
+        1.0
+        - torch.cos(angular_difference).clamp(min=0.0)
+    )
 
     direction_scale = _safe_quantile(
         directional_error,
         direction_quantile,
         "Direction",
+        max_samples=max_samples,
     )
+
+    # =========================================================
+    # 3. Wind-speed scale
+    # =========================================================
+
     wind_speed_scale = _safe_quantile(
         wind_sp.clamp(min=0.0),
         wind_speed_quantile,
         "Wind speed",
+        max_samples=max_samples,
     )
+
+    # =========================================================
+    # Assemble scales
+    # =========================================================
 
     scales: dict[str, float] = {
         "distance_scale": float(distance_scale),
@@ -974,17 +1112,27 @@ def estimate_wind_kernel_scales(
         "wind_speed_scale": float(wind_speed_scale),
     }
 
+    # =========================================================
+    # 4. Cloud-cover scale
+    # =========================================================
+
     if tcc is not None:
-        cloud_cover = tcc.clamp(min=0.0, max=1.0).reshape(-1)
-        if cloud_cover.numel() == 0:
-            raise ValueError("tcc is empty.")
+
+        cloud_cover = tcc.clamp(
+            min=0.0,
+            max=1.0,
+        )
 
         cloud_cover_scale = _safe_quantile(
             cloud_cover,
             cloud_cover_quantile,
             "Cloud cover",
+            max_samples=max_samples,
         )
-        scales["cloud_cover_scale"] = float(cloud_cover_scale)
+
+        scales["cloud_cover_scale"] = float(
+            cloud_cover_scale
+        )
 
     return scales
 
