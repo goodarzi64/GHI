@@ -806,7 +806,7 @@ def _safe_quantile(
     x: torch.Tensor,
     q: float,
     name: str,
-    max_samples: int = 1_000,
+    max_samples: int = 1_00,
 ) -> torch.Tensor:
     x = x.flatten()
     total_samples = x.numel()
