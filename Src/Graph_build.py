@@ -802,7 +802,6 @@ class WindAdjacency(nn.Module):
         return A
 
 
-```python
 def _safe_quantile(
     x: torch.Tensor,
     q: float,
