@@ -805,9 +805,11 @@ class WindAdjacency(nn.Module):
 def _safe_quantile(
     x: torch.Tensor,
     q: float,
-    max_samples: int = 1_000_000,
+    name: str,
+    max_samples: int = 1_000,
 ) -> torch.Tensor:
     x = x.flatten()
+    total_samples = x.numel()
 
     if x.numel() > max_samples:
         indices = torch.randint(
@@ -817,6 +819,7 @@ def _safe_quantile(
         )
         x = x[indices]
 
+    print(f"{name} scale estimation: using {x.numel()} of {total_samples} samples")
     return torch.quantile(x, q)
 
 
@@ -887,6 +890,7 @@ def estimate_wind_kernel_scales(
     distance_scale = _safe_quantile(
         distances,
         distance_quantile,
+        "Distance",
     )
 
     if wind_sp.ndim == 1:
@@ -912,10 +916,12 @@ def estimate_wind_kernel_scales(
     direction_scale = _safe_quantile(
         directional_error,
         direction_quantile,
+        "Direction",
     )
     wind_speed_scale = _safe_quantile(
         wind_sp.clamp(min=0.0),
         wind_speed_quantile,
+        "Wind speed",
     )
 
     scales: dict[str, float] = {
@@ -932,6 +938,7 @@ def estimate_wind_kernel_scales(
         cloud_cover_scale = _safe_quantile(
             cloud_cover,
             cloud_cover_quantile,
+            "Cloud cover",
         )
         scales["cloud_cover_scale"] = float(cloud_cover_scale)
 
