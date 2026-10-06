@@ -802,6 +802,10 @@ class WindAdjacency(nn.Module):
         return A
 
 
+_ESTIMATION_STEP_HOURS = 2
+_MAX_ESTIMATION_BATCH_COUNT = 17_520
+
+
 def estimate_wind_kernel_scales(
     D_ij: torch.Tensor,
     Theta_ij: torch.Tensor,
@@ -824,6 +828,12 @@ def estimate_wind_kernel_scales(
     Theta_ij = Theta_ij.float()
     wind_sp = wind_sp.float()
     wind_dir = wind_dir.float()
+
+    if wind_sp.ndim == 2 and wind_sp.shape[0] > _MAX_ESTIMATION_BATCH_COUNT:
+        wind_sp = wind_sp[::_ESTIMATION_STEP_HOURS][:_MAX_ESTIMATION_BATCH_COUNT]
+        wind_dir = wind_dir[::_ESTIMATION_STEP_HOURS][:_MAX_ESTIMATION_BATCH_COUNT]
+        if tcc is not None and tcc.ndim == 2:
+            tcc = tcc[::_ESTIMATION_STEP_HOURS][:_MAX_ESTIMATION_BATCH_COUNT]
 
     if D_ij.ndim != 2 or D_ij.shape[0] != D_ij.shape[1]:
         raise ValueError("D_ij must have shape [N, N].")
@@ -871,35 +881,27 @@ def estimate_wind_kernel_scales(
         distance_quantile,
     )
 
-    wind_to = (wind_dir + torch.pi) % (2.0 * torch.pi)
     if wind_sp.ndim == 1:
-        angular_difference = WindAdjacency.angdiff(
-            Theta_ij,
-            wind_to.unsqueeze(-1),
-        )
-    else:
-        angular_difference = WindAdjacency.angdiff(
-            Theta_ij.unsqueeze(0).expand(wind_sp.shape[0], -1, -1),
-            wind_to.unsqueeze(-1),
-        )
+        wind_sp = wind_sp.unsqueeze(0)
+        wind_dir = wind_dir.unsqueeze(0)
+    wind_to = (wind_dir + torch.pi) % (2.0 * torch.pi)
+    batch_count, node_count = wind_sp.shape
+    directed_count = batch_count * node_count * (node_count - 1)
+    if directed_count == 0:
+        raise ValueError("Theta_ij contains no off-diagonal directions.")
+
+    angular_difference = WindAdjacency.angdiff(
+        Theta_ij.unsqueeze(0),
+        wind_to.unsqueeze(-1),
+    )
+    off_diagonal_mask = ~torch.eye(
+        node_count,
+        dtype=torch.bool,
+        device=Theta_ij.device,
+    )
+    angular_difference = angular_difference[:, off_diagonal_mask]
 
     directional_error = 1.0 - torch.cos(angular_difference).clamp(min=0.0)
-
-    off_diagonal_mask = torch.ones_like(
-        D_ij,
-        dtype=torch.bool,
-    )
-    off_diagonal_mask.fill_diagonal_(0)
-    directional_error = directional_error.reshape(
-        -1,
-        D_ij.numel(),
-    )[:, off_diagonal_mask.reshape(-1)]
-
-    if directional_error.numel() == 0:
-        raise ValueError(
-            "Theta_ij contains no off-diagonal directions."
-        )
-
     direction_scale = torch.quantile(
         directional_error.reshape(-1),
         direction_quantile,
@@ -989,14 +991,23 @@ def build_wind_cloud_adjacency(
     if wind_dir.dim() == 1:
         wind_dir = wind_dir.unsqueeze(0)
 
-    estimated_scales = estimate_wind_kernel_scales(
-        D_ij=D_ij,
-        Theta_ij=Theta_ij,
-        wind_sp=wind_sp,
-        wind_dir=wind_dir,
-        tcc=tcc,
+    needs_estimation = (
+        distance_scale is None
+        or direction_scale is None
+        or wind_speed_scale is None
+        or (tcc is not None and cloud_cover_scale is None)
     )
-    print(f"Estimated wind kernel scales: {estimated_scales}")
+    estimated_scales = (
+        estimate_wind_kernel_scales(
+            D_ij=D_ij,
+            Theta_ij=Theta_ij,
+            wind_sp=wind_sp,
+            wind_dir=wind_dir,
+            tcc=tcc,
+        )
+        if needs_estimation
+        else {}
+    )
 
     distance_scale = (
         estimated_scales["distance_scale"]
@@ -1021,6 +1032,15 @@ def build_wind_cloud_adjacency(
         )
     else:
         cloud_cover_scale = 0.5 if cloud_cover_scale is None else cloud_cover_scale
+
+    active_scales = {
+        "distance_scale": float(distance_scale),
+        "direction_scale": float(direction_scale),
+        "wind_speed_scale": float(wind_speed_scale),
+    }
+    if tcc is not None:
+        active_scales["cloud_cover_scale"] = float(cloud_cover_scale)
+    print(f"Wind kernel scales: {active_scales}")
 
     if tcc is not None:
         tcc = tcc.float()
