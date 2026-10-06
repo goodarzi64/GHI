@@ -901,18 +901,47 @@ def estimate_wind_kernel_scales(
     if node_count < 2:
         raise ValueError("Theta_ij contains no off-diagonal directions.")
 
-    angular_difference = WindAdjacency.angdiff(
-        Theta_ij.unsqueeze(0),
-        wind_to.unsqueeze(-1),
+    # ---------------------------------------------------------
+    # Direction-scale estimation
+    # Sample directed (batch, destination, source) pairs before
+    # constructing the pairwise angular-difference tensor.
+    # ---------------------------------------------------------
+    num_direction_samples = min(100, batch_count * node_count * (node_count - 1))
+
+    if num_direction_samples == 0:
+        raise ValueError("No valid off-diagonal direction pairs.")
+
+    batch_idx = torch.randint(
+        batch_count,
+        (num_direction_samples,),
+        device=wind_sp.device,
     )
-    off_diagonal_mask = ~torch.eye(
+
+    dst_idx = torch.randint(
         node_count,
-        dtype=torch.bool,
-        device=Theta_ij.device,
+        (num_direction_samples,),
+        device=wind_sp.device,
     )
-    angular_difference = angular_difference[:, off_diagonal_mask]
+
+    src_idx = torch.randint(
+        node_count - 1,
+        (num_direction_samples,),
+        device=wind_sp.device,
+    )
+
+    # Map src_idx so that src != dst
+    src_idx = src_idx + (src_idx >= dst_idx).long()
+
+    theta = Theta_ij[dst_idx, src_idx]
+    wind_to_sample = wind_to[batch_idx, dst_idx]
+
+    angular_difference = WindAdjacency.angdiff(
+        theta,
+        wind_to_sample,
+    )
 
     directional_error = 1.0 - torch.cos(angular_difference).clamp(min=0.0)
+
     direction_scale = _safe_quantile(
         directional_error,
         direction_quantile,
