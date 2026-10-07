@@ -824,7 +824,6 @@ def _safe_quantile(
         Scalar tensor containing the estimated quantile.
     """
     x = x.reshape(-1)
-
     total_samples = x.numel()
 
     if total_samples == 0:
@@ -838,6 +837,8 @@ def _safe_quantile(
             device=x.device,
         )
         x = x.index_select(0, indices)
+    else:
+        indices = None
 
     print(
         f"{name} scale estimation: "
@@ -991,7 +992,6 @@ def estimate_wind_kernel_scales(
 
     distances = D_ij[upper_mask]
     distances = distances.clamp(min=0.0)
-    distances = distances[distances > 0.0]
 
     if distances.numel() == 0:
         raise ValueError(
@@ -1011,9 +1011,8 @@ def estimate_wind_kernel_scales(
     #
     # wind_dir is [T,N].
     #
-    # Instead of constructing [T,N,N] angular differences,
-    # randomly sample directed (time, destination, source)
-    # combinations first.
+    # Sample time steps, then include every directed off-diagonal
+    # pair from each selected time step.
     # =========================================================
 
     wind_to = (
@@ -1025,62 +1024,38 @@ def estimate_wind_kernel_scales(
         * node_count
         * (node_count - 1)
     )
-
-    num_direction_samples = min(
-        max_samples,
-        total_direction_pairs,
-    )
-
-    if num_direction_samples == 0:
+    if total_direction_pairs == 0:
         raise ValueError(
             "No valid directed station pairs are available."
         )
+    pairs_per_time = node_count * (node_count - 1)
+    sampled_time_count = min(time_count, max_samples // pairs_per_time)
+    if sampled_time_count == 0:
+        raise ValueError(
+            f"max_samples must be at least {pairs_per_time:,} to include "
+            "all directed pairs from one time step."
+        )
 
-    time_idx = torch.randint(
-        low=0,
-        high=time_count,
-        size=(num_direction_samples,),
+    sampled_time_indices = torch.randperm(
+        time_count,
         device=wind_sp.device,
-    )
-
-    dst_idx = torch.randint(
-        low=0,
-        high=node_count,
-        size=(num_direction_samples,),
-        device=wind_sp.device,
-    )
-
-    # Generate a source index from [0, N-2] and shift it when
-    # necessary so that source != destination.
-    src_idx = torch.randint(
-        low=0,
-        high=node_count - 1,
-        size=(num_direction_samples,),
-        device=wind_sp.device,
-    )
-
-    src_idx = src_idx + (
-        src_idx >= dst_idx
-    ).long()
-
-    theta_sample = Theta_ij[
-        dst_idx,
-        src_idx,
-    ]
-
-    wind_to_sample = wind_to[
-        time_idx,
-        dst_idx,
-    ]
-
+    )[:sampled_time_count]
+    selected_wind_to = wind_to.index_select(0, sampled_time_indices)
     angular_difference = WindAdjacency.angdiff(
-        theta_sample,
-        wind_to_sample,
+        Theta_ij.unsqueeze(0),
+        selected_wind_to.unsqueeze(-1),
     )
-
+    off_diagonal_mask = ~torch.eye(
+        node_count,
+        dtype=torch.bool,
+        device=Theta_ij.device,
+    )
     directional_error = (
-        1.0
-        - torch.cos(angular_difference).clamp(min=0.0)
+        1.0 - torch.cos(angular_difference[:, off_diagonal_mask]).clamp(min=0.0)
+    )
+    print(
+        f"Direction scale estimation: selected {sampled_time_count:,} "
+        f"of {time_count:,} time steps"
     )
 
     direction_scale = _safe_quantile(
