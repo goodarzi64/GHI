@@ -840,11 +840,6 @@ def _safe_quantile(
     else:
         indices = None
 
-    print(
-        f"{name} scale estimation: "
-        f"using {x.numel():,} of {total_samples:,} samples"
-    )
-
     return torch.quantile(x, q)
 
 
