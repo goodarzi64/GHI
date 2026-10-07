@@ -806,7 +806,7 @@ def _safe_quantile(
     x: torch.Tensor,
     q: float,
     name: str,
-    max_samples: int = 10_000,
+    max_samples: int = 100_000,
 ) -> torch.Tensor:
     """
     Estimate a quantile from at most ``max_samples`` randomly selected values.
@@ -853,7 +853,7 @@ def estimate_wind_kernel_scales(
     direction_quantile: float = 0.50,
     wind_speed_quantile: float = 0.50,
     cloud_cover_quantile: float = 0.50,
-    max_samples: int = 10_000,
+    max_samples: int = 100_000,
 ) -> dict[str, float]:
     """
     Estimate fixed kernel scales for wind/cloud graph construction.
