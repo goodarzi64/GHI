@@ -56,21 +56,11 @@ class WindowedFold:
     slices: TemporalFold
 
 
-@dataclass(frozen=True)
-class SplitArrays:
-    """Legacy container for raw sliced arrays."""
-
-    train: Dict[str, np.ndarray]
-    val: Dict[str, np.ndarray]
-    test: Dict[str, np.ndarray]
-
-
 def make_expanding_folds(
     n_timesteps: int,
     *,
-    train_duration: Optional[int] = None,
-    val_duration: Optional[int] = None,
-    test_duration: Optional[int] = None,
+    val_duration: int,
+    test_duration: int,
     fold_count: int = 1,
 ) -> List[TemporalFold]:
     """
@@ -78,13 +68,13 @@ def make_expanding_folds(
 
     Args:
         n_timesteps: Total temporal length ``T``.
-        train_duration: Initial train length. If omitted, it is inferred from
-            the remaining timesteps after validation and test lengths.
-        val_duration: Validation length per fold. If ``0``, no validation folds
-            are created and one train/test split is returned.
-        test_duration: Final test length. If omitted, defaults to one third of
-            the series.
+        val_duration: Required validation length per fold. If ``0``, no
+            validation folds are created and one train/test split is returned.
+        test_duration: Required final test length.
         fold_count: Number of expanding validation folds.
+
+    The initial training duration is inferred from the timesteps left after
+    reserving the final test period and all validation folds.
 
     Returns:
         A list of ``TemporalFold`` objects. Test is always the last
@@ -92,9 +82,6 @@ def make_expanding_folds(
     """
     _validate_positive("n_timesteps", n_timesteps)
     _validate_positive("fold_count", fold_count)
-
-    if test_duration is None:
-        test_duration = max(1, n_timesteps // 3)
     _validate_positive("test_duration", test_duration)
 
     if test_duration >= n_timesteps:
@@ -103,26 +90,21 @@ def make_expanding_folds(
     available = n_timesteps - test_duration
     test_slice = (available, n_timesteps)
 
-    if val_duration is None:
-        val_duration = max(0, available // (fold_count + 1))
     if val_duration < 0:
         raise ValueError("val_duration cannot be negative.")
-
     if val_duration == 0:
-        train_len = available if train_duration is None else train_duration
-        _validate_split_lengths(train_len, 0, test_duration, n_timesteps)
+        _validate_split_lengths(available, 0, test_duration, n_timesteps)
         return [
             TemporalFold(
                 name="train_test",
-                train_slice=(0, train_len),
+                train_slice=(0, available),
                 val_slice=None,
                 test_slice=test_slice,
             )
         ]
 
     required_val = val_duration * fold_count
-    if train_duration is None:
-        train_duration = available - required_val
+    train_duration = available - required_val
     _validate_split_lengths(train_duration, required_val, test_duration, n_timesteps)
 
     folds: List[TemporalFold] = []
@@ -140,23 +122,6 @@ def make_expanding_folds(
         )
 
     return folds
-
-
-def make_three_year_folds(n_timesteps: int) -> List[TemporalFold]:
-    """
-    Backward-compatible 3-year split.
-
-    Test is the final year. The second year is split into two expanding
-    validation folds.
-    """
-    year_len = _resolve_equal_year_length(n_timesteps)
-    return make_expanding_folds(
-        n_timesteps,
-        train_duration=year_len,
-        val_duration=year_len // 2,
-        test_duration=year_len,
-        fold_count=2,
-    )
 
 
 def build_windowed_folds(
@@ -290,13 +255,12 @@ def load_windowed_drive_folds(
     *,
     W: int,
     H: int,
+    val_duration: int,
+    test_duration: int,
     stride: int = 1,
-    train_duration: Optional[int] = None,
-    val_duration: Optional[int] = None,
-    test_duration: Optional[int] = None,
     fold_count: int = 1,
     tensor_filename: str = "filtered_tensor.npz",
-    tensor_array_key: Optional[str] = None,
+    tensor_array_key: str,
     input_mask_key: Optional[str] = "mask_forecast",
     output_mask_key: Optional[str] = None,
     target_array_key: Optional[str] = None,
@@ -306,17 +270,22 @@ def load_windowed_drive_folds(
         "wind_cloud_graphs.npz",
         "dtw_graphs.npz",
     ),
-    graph_array_keys: Optional[Mapping[str, str]] = None,
+    graph_array_keys: Mapping[str, str],
     allow_pickle: bool = True,
 ) -> List[WindowedFold]:
     """
-    Load ``filtered_tensor.npz`` and all selected graph files, then return
-    in-memory windowed folds.
+    Load ``filtered_tensor.npz`` and selected graph files, then return
+    in-memory windowed folds. ``tensor_array_key`` and an explicit key for
+    each existing graph artifact must be provided.
 
-    ``graph_array_keys`` may select one array per graph artifact. Keys can be
-    artifact names such as ``"static_graph"`` or filenames such as
-    ``"static_graph.npz"``. If omitted, the first graph-like array is used.
+    ``graph_array_keys`` maps each graph artifact to its array key. Mapping
+    keys can be artifact names such as ``"static_graph"`` or filenames such
+    as ``"static_graph.npz"``. Graph array inference is disabled. Missing
+    graph files are skipped; each existing graph file must have a mapping entry.
     """
+    if graph_array_keys is None:
+        raise ValueError("graph_array_keys is required and cannot be None.")
+
     tensor_arrays = load_npz_arrays(
         os.path.join(base_dir, tensor_filename),
         allow_pickle=allow_pickle,
@@ -340,7 +309,6 @@ def load_windowed_drive_folds(
 
     folds = make_expanding_folds(
         tensor.shape[0],
-        train_duration=train_duration,
         val_duration=val_duration,
         test_duration=test_duration,
         fold_count=fold_count,
@@ -366,11 +334,16 @@ def load_graph_arrays(
         "wind_cloud_graphs.npz",
         "dtw_graphs.npz",
     ),
-    graph_array_keys: Optional[Mapping[str, str]] = None,
+    graph_array_keys: Mapping[str, str],
     allow_pickle: bool = True,
 ) -> Dict[str, np.ndarray]:
-    """Load one selected array from each graph file."""
-    graph_array_keys = graph_array_keys or {}
+    """Load explicitly keyed arrays from existing graph files.
+
+    ``graph_array_keys`` must map each existing artifact name or filename to
+    an array key. Graph array inference is intentionally disabled.
+    """
+    if graph_array_keys is None:
+        raise ValueError("graph_array_keys is required and cannot be None.")
     graphs: Dict[str, np.ndarray] = {}
 
     for filename in graph_filenames:
@@ -381,7 +354,7 @@ def load_graph_arrays(
 
         arrays = load_npz_arrays(path, allow_pickle=allow_pickle)
         array_key = graph_array_keys.get(artifact_name, graph_array_keys.get(filename))
-        graphs[artifact_name] = select_array(arrays, array_key, ndim=None, graph_like=True)
+        graphs[artifact_name] = select_array(arrays, array_key, ndim=None)
 
     if not graphs:
         raise FileNotFoundError(f"No graph files found in: {graph_dir}")
@@ -391,28 +364,35 @@ def load_graph_arrays(
 def select_array(
     arrays: Mapping[str, np.ndarray],
     array_key: Optional[str],
+    ndim: int | None = None,
     *,
-    ndim: Optional[int],
-    graph_like: bool = False,
+    name: str = "array",
 ) -> np.ndarray:
-    """Select one array by key, or infer a suitable array from an NPZ mapping."""
-    if array_key is not None:
-        if array_key not in arrays:
-            raise KeyError(f"Array key not found: {array_key}")
-        array = arrays[array_key]
-        _validate_selected_array(array, array_key, ndim=ndim, graph_like=graph_like)
-        return array
+    """
+    Select an array using an explicit key; automatic inference is disabled.
+    """
+    if not array_key:
+        raise ValueError(
+            f"{name}: an explicit array_key is required; "
+            "automatic array inference is disabled."
+        )
 
-    for key, array in arrays.items():
-        try:
-            _validate_selected_array(array, key, ndim=ndim, graph_like=graph_like)
-        except ValueError:
-            continue
-        return array
+    if array_key not in arrays:
+        available = ", ".join(arrays.keys())
+        raise KeyError(
+            f"{name}: array key {array_key!r} was not found. "
+            f"Available keys: {available}"
+        )
 
-    expected = "graph-like [N,N] or [T,N,N]" if graph_like else f"{ndim}D"
-    raise ValueError(f"Could not infer a {expected} array from keys: {list(arrays)}")
+    array = np.asarray(arrays[array_key])
 
+    if ndim is not None and array.ndim != ndim:
+        raise ValueError(
+            f"{name}: array {array_key!r} must have ndim={ndim}, "
+            f"but got shape {array.shape}."
+        )
+
+    return array
 
 def resolve_mask(arrays: Mapping[str, np.ndarray], mask: MaskLike) -> Optional[np.ndarray]:
     """
@@ -436,53 +416,6 @@ def resolve_mask(arrays: Mapping[str, np.ndarray], mask: MaskLike) -> Optional[n
     raise KeyError(f"Mask key not found: {mask}")
 
 
-def split_arrays_by_fold(
-    arrays: Mapping[str, np.ndarray],
-    fold: TemporalFold,
-    *,
-    time_axis: int = 0,
-    static_keys: Iterable[str] = (),
-) -> SplitArrays:
-    """Legacy raw array splitter."""
-    static_key_set = set(static_keys)
-    train: Dict[str, np.ndarray] = {}
-    val: Dict[str, np.ndarray] = {}
-    test: Dict[str, np.ndarray] = {}
-
-    for key, array in arrays.items():
-        if key in static_key_set:
-            train[key] = array
-            if fold.val_slice is not None:
-                val[key] = array
-            test[key] = array
-            continue
-
-        train[key] = slice_time(array, fold.train_slice, axis=time_axis)
-        if fold.val_slice is not None:
-            val[key] = slice_time(array, fold.val_slice, axis=time_axis)
-        test[key] = slice_time(array, fold.test_slice, axis=time_axis)
-
-    return SplitArrays(train=train, val=val, test=test)
-
-
-def split_npz_by_fold(
-    npz_path: str,
-    fold: TemporalFold,
-    *,
-    time_axis: int = 0,
-    static_keys: Iterable[str] = (),
-    allow_pickle: bool = True,
-) -> SplitArrays:
-    """Load one ``.npz`` file and split all arrays by the selected fold."""
-    arrays = load_npz_arrays(npz_path, allow_pickle=allow_pickle)
-    return split_arrays_by_fold(
-        arrays,
-        fold,
-        time_axis=time_axis,
-        static_keys=static_keys,
-    )
-
-
 def load_npz_arrays(npz_path: str, *, allow_pickle: bool = True) -> Dict[str, np.ndarray]:
     """Load all arrays from a compressed ``.npz`` artifact into a plain dict."""
     if not os.path.exists(npz_path):
@@ -490,112 +423,6 @@ def load_npz_arrays(npz_path: str, *, allow_pickle: bool = True) -> Dict[str, np
 
     with np.load(npz_path, allow_pickle=allow_pickle) as data:
         return {key: data[key] for key in data.files}
-
-
-def load_drive_artifacts(
-    base_dir: str,
-    *,
-    tensor_filename: str = "filtered_tensor.npz",
-    graph_dirname: str = "precomputed_graphs",
-    graph_filenames: Sequence[str] = (
-        "static_graph.npz",
-        "wind_cloud_graphs.npz",
-        "dtw_graphs.npz",
-    ),
-    allow_pickle: bool = True,
-) -> Dict[str, Dict[str, np.ndarray]]:
-    """Legacy loader for raw tensor and graph artifacts."""
-    artifacts: Dict[str, Dict[str, np.ndarray]] = {
-        "tensor": load_npz_arrays(
-            os.path.join(base_dir, tensor_filename),
-            allow_pickle=allow_pickle,
-        )
-    }
-
-    graph_dir = os.path.join(base_dir, graph_dirname)
-    for filename in graph_filenames:
-        key = os.path.splitext(filename)[0]
-        path = os.path.join(graph_dir, filename)
-        if os.path.exists(path):
-            artifacts[key] = load_npz_arrays(path, allow_pickle=allow_pickle)
-
-    return artifacts
-
-
-def split_drive_artifacts(
-    artifacts: Mapping[str, Mapping[str, np.ndarray]],
-    fold: TemporalFold,
-    *,
-    time_axis: int = 0,
-    static_artifact_names: Iterable[str] = ("static_graph",),
-) -> Dict[str, SplitArrays]:
-    """Legacy raw artifact splitter."""
-    static_names = set(static_artifact_names)
-    split_artifacts: Dict[str, SplitArrays] = {}
-
-    for artifact_name, arrays in artifacts.items():
-        is_static = artifact_name in static_names
-        split_artifacts[artifact_name] = split_arrays_by_fold(
-            arrays,
-            fold,
-            time_axis=time_axis,
-            static_keys=arrays.keys() if is_static else (),
-        )
-
-    return split_artifacts
-
-
-def describe_folds(folds: Sequence[TemporalFold]) -> List[Dict[str, int | str | None]]:
-    """Return split boundaries and row counts for logging."""
-    rows: List[Dict[str, int | str | None]] = []
-    for fold in folds:
-        val_start = fold.val_slice[0] if fold.val_slice is not None else None
-        val_end = fold.val_slice[1] if fold.val_slice is not None else None
-        val_rows = (
-            fold.val_slice[1] - fold.val_slice[0]
-            if fold.val_slice is not None
-            else 0
-        )
-        rows.append(
-            {
-                "fold": fold.name,
-                "train_start": fold.train_slice[0],
-                "train_end": fold.train_slice[1],
-                "train_rows": fold.train_slice[1] - fold.train_slice[0],
-                "val_start": val_start,
-                "val_end": val_end,
-                "val_rows": val_rows,
-                "test_start": fold.test_slice[0],
-                "test_end": fold.test_slice[1],
-                "test_rows": fold.test_slice[1] - fold.test_slice[0],
-            }
-        )
-    return rows
-
-
-def infer_n_timesteps(
-    arrays: Mapping[str, np.ndarray],
-    *,
-    preferred_keys: Sequence[str] = ("tensor", "data", "A_sym_norm", "A_wind"),
-    time_axis: int = 0,
-) -> int:
-    """Infer ``T`` from the first matching array in an artifact dictionary."""
-    for key in preferred_keys:
-        if key in arrays:
-            return int(arrays[key].shape[time_axis])
-
-    for array in arrays.values():
-        if array.ndim > time_axis:
-            return int(array.shape[time_axis])
-
-    raise ValueError("Could not infer timesteps from empty or scalar arrays.")
-
-
-def slice_time(array: np.ndarray, time_slice: TimeSlice, *, axis: int = 0) -> np.ndarray:
-    """Slice a numpy array by time along any axis."""
-    index = [slice(None)] * array.ndim
-    index[axis] = slice(time_slice[0], time_slice[1])
-    return array[tuple(index)]
 
 
 def _select_features(array: np.ndarray, mask: MaskLike) -> np.ndarray:
@@ -647,23 +474,6 @@ def _validate_temporal_tensor(array: np.ndarray, name: str) -> None:
         raise ValueError(f"{name} must be shaped [T,N,F], got {array.shape}.")
 
 
-def _validate_selected_array(
-    array: np.ndarray,
-    key: str,
-    *,
-    ndim: Optional[int],
-    graph_like: bool,
-) -> None:
-    if graph_like:
-        if array.ndim not in (2, 3):
-            raise ValueError(f"{key} is not graph-like.")
-        if array.shape[-1] != array.shape[-2]:
-            raise ValueError(f"{key} is not square on its last two axes.")
-        return
-
-    if ndim is not None and array.ndim != ndim:
-        raise ValueError(f"{key} must be {ndim}D, got {array.ndim}D.")
-
 
 def _validate_positive(name: str, value: int) -> None:
     if value <= 0:
@@ -682,10 +492,3 @@ def _validate_split_lengths(
             "train_duration + validation duration(s) + test_duration exceeds n_timesteps."
         )
 
-
-def _resolve_equal_year_length(n_timesteps: int) -> int:
-    """Validate the equal-year assumption and return one year length."""
-    _validate_positive("n_timesteps", n_timesteps)
-    if n_timesteps % 3 != 0:
-        raise ValueError("n_timesteps must be divisible by 3 for equal 3-year data.")
-    return n_timesteps // 3
