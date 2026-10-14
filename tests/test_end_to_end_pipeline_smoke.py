@@ -29,8 +29,6 @@ class EndToEndForwardSmokeModel(torch.nn.Module):
             latent_dim=hidden_dim,
             hidden_dim=2 * hidden_dim,
             residual_scale=0.1,
-            k=2,
-            candidate_scale=3,
         )
         self.propagator = MultiGraphAdaptivePropagation(
             channels=hidden_dim,
@@ -52,7 +50,6 @@ class EndToEndForwardSmokeModel(torch.nn.Module):
             z_graph,
             a_wind_current,
             a_sem_current,
-            return_sparse=False,
         )
 
         h_future = self.propagator(z_current, a_phys, a_wind_hat, a_sem_hat)
@@ -122,8 +119,8 @@ def test_temporal_encoder_and_graph_generator_still_have_valid_interface():
 
     z_current = z_hist[:, -1, :, :]
     z_graph = z_current.unsqueeze(1).expand(-1, 3, -1, -1)
-    graph_gen = FutureSpatialDependencyGenerator(latent_dim=8, hidden_dim=16, residual_scale=0.1, k=2)
-    a_wind_hat, a_sem_hat = graph_gen(z_graph, torch.rand(2, 5, 5), torch.rand(2, 5, 5), return_sparse=False)
+    graph_gen = FutureSpatialDependencyGenerator(latent_dim=8, hidden_dim=16, residual_scale=0.1)
+    a_wind_hat, a_sem_hat = graph_gen(z_graph, torch.rand(2, 5, 5), torch.rand(2, 5, 5))
 
     assert z_graph.shape == (2, 3, 5, 8)
     assert a_wind_hat.shape == (2, 3, 5, 5)

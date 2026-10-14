@@ -39,8 +39,8 @@ def main():
     z_current = z_hist[:, -1, :, :]
     z_graph = z_current.unsqueeze(1).expand(-1, H, -1, -1)
 
-    graph_gen = FutureSpatialDependencyGenerator(latent_dim=C, hidden_dim=16, residual_scale=0.1, k=2)
-    a_wind_hat, a_sem_hat = graph_gen(z_graph, a_wind_current_dense, a_sem_current_dense, return_sparse=False)
+    graph_gen = FutureSpatialDependencyGenerator(latent_dim=C, hidden_dim=16, residual_scale=0.1)
+    a_wind_hat, a_sem_hat = graph_gen(z_graph, a_wind_current_dense, a_sem_current_dense)
 
     propagator = MultiGraphAdaptivePropagation(
         channels=C,

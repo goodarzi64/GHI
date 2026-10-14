@@ -156,7 +156,7 @@ def test_downstream_pipeline_modules():
     z_graph = torch.randn(2, 3, 5, 8)
     a_wind_current_dense = torch.rand(2, 5, 5)
     a_sem_current_dense = torch.rand(2, 5, 5)
-    a_wind_hat, a_sem_hat = graph_gen(z_graph, a_wind_current_dense, a_sem_current_dense, return_sparse=False)
+    a_wind_hat, a_sem_hat = graph_gen(z_graph, a_wind_current_dense, a_sem_current_dense)
     assert a_wind_hat.shape == (2, 3, 5, 5)
     assert a_sem_hat.shape == (2, 3, 5, 5)
     assert torch.isfinite(a_wind_hat).all()
@@ -193,65 +193,17 @@ def test_propagation_refinement_toggle():
     assert torch.isfinite(y_yes).all()
 
 
-def test_future_spatial_dependency_sparse_topk():
+def test_future_spatial_dependency_dense_retains_all_updated_edges():
     torch.manual_seed(0)
-    graph_gen = FutureSpatialDependencyGenerator(latent_dim=8, hidden_dim=16, residual_scale=0.1, k=2)
-    z_graph = torch.randn(2, 3, 5, 8)
-    a_wind_current_dense = torch.rand(2, 5, 5)
-    a_sem_current_dense = torch.rand(2, 5, 5)
-
-    a_wind_sparse, a_sem_sparse = graph_gen(
-        z_graph,
-        a_wind_current_dense,
-        a_sem_current_dense,
-        return_sparse=True,
-    )
-
-    assert isinstance(a_wind_sparse, list) and len(a_wind_sparse) == 3
-    assert isinstance(a_sem_sparse, list) and len(a_sem_sparse) == 3
-
-    for horizon_idx in range(3):
-        wind_edge_index, wind_edge_weight = a_wind_sparse[horizon_idx]
-        sem_edge_index, sem_edge_weight = a_sem_sparse[horizon_idx]
-
-        assert wind_edge_index.shape[0] == 2
-        assert sem_edge_index.shape[0] == 2
-        assert wind_edge_weight.shape[0] == wind_edge_index.shape[1]
-        assert sem_edge_weight.shape[0] == sem_edge_index.shape[1]
-        assert wind_edge_index.min().item() >= 0
-        assert sem_edge_index.min().item() >= 0
-        assert wind_edge_index.max().item() < 5 * 2
-        assert sem_edge_index.max().item() < 5 * 2
-
-
-def test_future_spatial_dependency_dense_keeps_only_k_final_edges_per_row():
-    torch.manual_seed(0)
-    graph_gen = FutureSpatialDependencyGenerator(latent_dim=4, hidden_dim=8, residual_scale=0.1, k=2, candidate_scale=3)
+    graph_gen = FutureSpatialDependencyGenerator(latent_dim=4, hidden_dim=8, residual_scale=0.1)
     z_graph = torch.randn(1, 2, 5, 4)
     a_wind_current_dense = torch.rand(1, 5, 5)
     a_sem_current_dense = torch.rand(1, 5, 5)
 
-    a_wind_hat, _ = graph_gen(z_graph, a_wind_current_dense, a_sem_current_dense, return_sparse=False)
+    a_wind_hat, _ = graph_gen(z_graph, a_wind_current_dense, a_sem_current_dense)
 
-    nonzero_per_row = (a_wind_hat[0, 0] != 0).float().sum(dim=1)
-    assert (nonzero_per_row <= 2).all()
-
-
-def test_future_wind_topk_selects_incoming_sources_and_sparse_edges_match_dense():
-    graph_gen = FutureSpatialDependencyGenerator(latent_dim=2, residual_scale=0.0, k=1)
-    z_graph = torch.zeros(1, 1, 3, 2)
-    incoming = torch.tensor([[[0.0, 0.8, 0.2], [0.1, 0.0, 0.9], [0.7, 0.3, 0.0]]])
-    semantic = torch.zeros_like(incoming)
-
-    wind_dense, _ = graph_gen(z_graph, incoming, semantic, return_sparse=False)
-    wind_sparse, _ = graph_gen(z_graph, incoming, semantic, return_sparse=True)
-    edge_index, edge_weight = wind_sparse[0]
-
-    reconstructed = torch.zeros_like(wind_dense[0, 0])
-    reconstructed[edge_index[1], edge_index[0]] = edge_weight
-    assert torch.equal(reconstructed, wind_dense[0, 0])
-    assert torch.equal(edge_index[0], torch.tensor([1, 2, 0]))
-    assert torch.equal(edge_index[1], torch.tensor([0, 1, 2]))
+    nonzero_per_row = (a_wind_hat[0, 0] != 0).sum(dim=1)
+    assert (nonzero_per_row >= 2).all()
 
 
 def test_propagator_aggregates_incoming_rows_at_destination():
@@ -273,38 +225,7 @@ def test_propagator_aggregates_incoming_rows_at_destination():
     assert torch.equal(result[0, 0, :, 0], torch.tensor([0.0, 2.0, 0.0]))
 
 
-def test_propagation_accepts_sparse_future_graphs():
-    torch.manual_seed(0)
-    z_current = torch.randn(2, 5, 8)
-    a_phys = torch.rand(5, 5)
-
-    graph_gen = FutureSpatialDependencyGenerator(latent_dim=8, hidden_dim=16, residual_scale=0.1, k=2)
-    z_graph = torch.randn(2, 3, 5, 8)
-    a_wind_current_dense = torch.rand(2, 5, 5)
-    a_sem_current_dense = torch.rand(2, 5, 5)
-    a_wind_sparse, a_sem_sparse = graph_gen(
-        z_graph,
-        a_wind_current_dense,
-        a_sem_current_dense,
-        return_sparse=True,
-    )
-
-    propagator = MultiGraphAdaptivePropagation(
-        channels=8,
-        num_horizons=3,
-        propagation_steps=2,
-        alpha=0.1,
-        dropout=0.0,
-        use_refinement=False,
-    )
-    propagated = propagator(z_current, a_phys, a_wind_sparse, a_sem_sparse)
-
-    assert propagated.shape == (2, 3, 5, 8)
-    assert torch.isfinite(propagated).all()
-
-
 if __name__ == '__main__':
     test_downstream_pipeline_modules()
-    test_future_spatial_dependency_sparse_topk()
-    test_propagation_accepts_sparse_future_graphs()
+    test_future_spatial_dependency_dense_retains_all_updated_edges()
     print('downstream pipeline smoke passed')

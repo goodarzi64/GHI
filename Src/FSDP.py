@@ -180,12 +180,6 @@ class MultiGraphAdaptivePropagation(nn.Module):
         self.message_norm_wind = nn.LayerNorm(channels)
         self.message_norm_sem = nn.LayerNorm(channels)
 
-    def _normalise_adjacency(self, adj: torch.Tensor) -> torch.Tensor:
-        if adj.dim() != 3:
-            raise ValueError(f"Expected adjacency [B, N, N], got {tuple(adj.shape)}")
-        denom = adj.sum(dim=-1, keepdim=True).clamp(min=1e-6)
-        return adj / denom
-
     def forward(
         self,
         z_current: torch.Tensor,
@@ -294,18 +288,19 @@ class MultiGraphAdaptivePropagation(nn.Module):
         z_refined = self.refiner(z_current) if self.use_refinement and self.refiner is not None else z_current
 
         horizon_emb = self.horizon_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
-        a_phys_norm = self._normalise_adjacency(a_phys.unsqueeze(0).expand(batch_size, -1, -1))
+        a_phys_batch = a_phys.unsqueeze(0).expand(batch_size, -1, -1)
 
         outputs = []
         for horizon_idx in range(self.num_horizons):
             h = z_refined
             h0 = z_refined
-            a_wind_h = self._normalise_adjacency(a_wind_hat[:, horizon_idx, :, :])
-            a_sem_h = self._normalise_adjacency(a_sem_hat[:, horizon_idx, :, :])
+            a_wind_h = a_wind_hat[:, horizon_idx, :, :]
+            a_sem_h = a_sem_hat[:, horizon_idx, :, :]
 
             for _ in range(self.propagation_steps):
-                # Message tensors are normalized only for gate generation.
-                m_phys = torch.einsum('bij,bjc->bic', a_phys_norm, h)
+                # Use raw adjacency weights for propagation. Layer-normalized message
+                # copies are used only to compute the fusion gates.
+                m_phys = torch.einsum('bij,bjc->bic', a_phys_batch, h)
                 m_wind = torch.einsum('bij,bjc->bic', a_wind_h, h)
                 m_sem = torch.einsum('bij,bjc->bic', a_sem_h, h)
 
