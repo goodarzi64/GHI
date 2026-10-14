@@ -42,7 +42,6 @@ class WindowedSplit:
     y: np.ndarray
     historical_graphs: Dict[str, np.ndarray]
     future_graphs: Dict[str, np.ndarray]
-    start_indices: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -246,7 +245,6 @@ def build_windowed_split(
         y=y,
         historical_graphs=historical_graphs,
         future_graphs=future_graphs,
-        start_indices=starts,
     )
 
 
@@ -263,7 +261,6 @@ def load_windowed_drive_folds(
     tensor_array_key: str,
     input_mask_key: Optional[str] = "mask_forecast",
     output_mask_key: Optional[str] = None,
-    target_array_key: Optional[str] = None,
     graph_dirname: str = "precomputed_graphs",
     graph_filenames: Sequence[str] = (
         "static_graph.npz",
@@ -294,12 +291,6 @@ def load_windowed_drive_folds(
 
     input_mask = resolve_mask(tensor_arrays, input_mask_key)
     output_mask = resolve_mask(tensor_arrays, output_mask_key)
-    target_tensor = (
-        select_array(tensor_arrays, target_array_key, ndim=None)
-        if target_array_key is not None
-        else None
-    )
-
     graphs = load_graph_arrays(
         os.path.join(base_dir, graph_dirname),
         graph_filenames=graph_filenames,
@@ -322,7 +313,6 @@ def load_windowed_drive_folds(
         stride=stride,
         input_mask=input_mask,
         output_mask=output_mask,
-        target_tensor=target_tensor,
     )
 
 

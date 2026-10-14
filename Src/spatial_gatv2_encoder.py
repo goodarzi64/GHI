@@ -1,5 +1,4 @@
-"""
-Spatial GATv2 Encoder for Multi-Graph Spatio-Temporal Forecasting.
+"""MSRL (Multi-graph Spatial Representation Learning).
 
 This module implements a single shared GATv2 encoder whose parameters are
 reused across the physical, wind, and semantic graphs. Each graph retains its
@@ -252,7 +251,7 @@ class SpatialGATv2EncoderBatched(nn.Module):
         in_features: int,
         out_features: int,
         n_graphs: int = 3,
-        heads: int = 8,
+        heads: int = 3,
         dropout: float = 0.1,
     ):
         super().__init__()

@@ -1,4 +1,5 @@
-"""Temporal context encoder for spatio-temporal forecasting.
+
+"""MTRL (Multi scale Temporal Representation Learning).
 
 This module is intentionally separate from forecasting and graph decoding.
 It models the temporal evolution of already fused node embeddings.
@@ -12,10 +13,14 @@ where:
     N = number of stations/nodes
     C = embedding dimension
 
-Each station is processed independently along the temporal dimension.
-The encoder uses residual temporal blocks with dilated 1D convolutions
-followed by stride-2 average-pooling downsampling to progressively
-compress the historical sequence into a shorter latent trajectory.
+Each station is processed independently along the temporal dimension. Each
+residual block uses left-padded causal dilated 1D convolutions: an output at
+time t can depend only on inputs at t and earlier times. Per-time-step channel
+normalization avoids aggregating statistics across future time positions.
+After the causal convolutions and residual addition, stride-2 average pooling
+compresses the historical sequence into a shorter latent trajectory. Each
+pooled output summarizes its pair of input steps and is aligned to the later
+step in that pair.
 """
 
 from __future__ import annotations
@@ -24,11 +29,19 @@ from typing import Optional, List
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class TemporalResidualBlock(nn.Module):
-    """Residual temporal block with dilated Conv1D layers and
-    stride-2 average-pooling downsampling.
+    """Causal dilated residual block with stride-2 temporal downsampling.
+
+    Both convolutions are padded only on the left by
+    ``dilation * (kernel_size - 1)``, so the output at each time position
+    cannot use values from later positions. Normalization acts across channels
+    independently at each time step. The residual branch uses a pointwise
+    convolution when the channel dimensions differ. After residual addition,
+    average pooling combines adjacent positions; each pooled value is aligned
+    with the later position in its pair.
     """
 
     def __init__(
@@ -44,14 +57,19 @@ class TemporalResidualBlock(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
+        # Left-only padding preserves sequence length without looking ahead.
+        self.left_padding = dilation * (kernel_size - 1)
+
         self.conv1 = nn.Conv1d(
             in_channels,
             out_channels,
             kernel_size=kernel_size,
-            padding="same",
+            padding=0,
             dilation=dilation,
         )
-        self.norm1 = nn.BatchNorm1d(out_channels)
+        # LayerNorm is applied after transposing to [batch, time, channels],
+        # so each time step is normalized independently across channels.
+        self.norm1 = nn.LayerNorm(out_channels)
         self.act1 = nn.GELU()
         self.drop1 = nn.Dropout(dropout)
 
@@ -59,10 +77,10 @@ class TemporalResidualBlock(nn.Module):
             out_channels,
             out_channels,
             kernel_size=kernel_size,
-            padding="same",
+            padding=0,
             dilation=dilation,
         )
-        self.norm2 = nn.BatchNorm1d(out_channels)
+        self.norm2 = nn.LayerNorm(out_channels)
         self.act2 = nn.GELU()
         self.drop2 = nn.Dropout(dropout)
 
@@ -100,13 +118,13 @@ class TemporalResidualBlock(nn.Module):
 
         residual = self.residual(x)
 
-        y = self.conv1(x)
-        y = self.norm1(y)
+        y = self.conv1(F.pad(x, (self.left_padding, 0)))
+        y = self.norm1(y.transpose(1, 2)).transpose(1, 2)
         y = self.act1(y)
         y = self.drop1(y)
 
-        y = self.conv2(y)
-        y = self.norm2(y)
+        y = self.conv2(F.pad(y, (self.left_padding, 0)))
+        y = self.norm2(y.transpose(1, 2)).transpose(1, 2)
         y = self.act2(y)
         y = self.drop2(y)
 
@@ -117,7 +135,7 @@ class TemporalResidualBlock(nn.Module):
 
 
 class TemporalContextEncoder(nn.Module):
-    """Encode and compress historical temporal context.
+    """Causally encode and compress historical temporal context.
 
     Input:
         [B, T, N, C]
@@ -125,8 +143,9 @@ class TemporalContextEncoder(nn.Module):
     Output:
         [B, W, N, C_out]
 
-    The temporal dimension is progressively compressed by approximately
-    a factor of two after each residual temporal block.
+    Each block applies causal dilated convolutions, so no temporal position
+    uses information from later positions. The temporal dimension is then
+    compressed by approximately a factor of two through average pooling.
     """
 
     def __init__(
@@ -216,13 +235,14 @@ class TemporalContextEncoder(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Encode historical temporal context.
+        """Encode historical temporal context with no convolutional lookahead.
 
         Args:
             x: [B, T, N, C]
 
         Returns:
-            [B, W, N, C_out]
+            [B, W, N, C_out], where each position depends only on its
+            corresponding and earlier input positions.
         """
 
         if x.dim() != 4:
