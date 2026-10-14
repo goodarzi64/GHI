@@ -4,7 +4,7 @@ Multi-graph spatial encoder using **GATv2** (Graph Attention Networks v2) with l
 
 ## Files
 
-- **`spatial_gatv2_encoder.py`**: GATv2 encoders with edge weight bias (β·log(A))
+- **`MSRL.py`**: GATv2 encoders with edge weight bias (β·log(A))
   - `GATv2EdgeBiasConv`: Single GATv2 layer with edge bias
   - `SpatialGATv2Encoder`: Unbatched encoder for 3 graphs
   - `SpatialGATv2EncoderBatched`: Batched version for Colab training
@@ -16,7 +16,7 @@ Multi-graph spatial encoder using **GATv2** (Graph Attention Networks v2) with l
   - `SpatialFusionModule`: Main module with strategy selection
   - `MultiScaleFusion`: Hierarchical fusion (advanced)
 
-- **`temporal_conv_module.py`**: Temporal convolution module for diurnal and seasonal kernels after spatial fusion
+- **`MTRL.py`**: Temporal convolution module for diurnal and seasonal kernels after spatial fusion
   - `TemporalBranch`: Conv1D branch with dilation and layer norm
   - `TemporalConvModule`: Temporal model that operates on fused spatial features over time and aggregates temporal kernels into one unified output
 
@@ -38,14 +38,14 @@ Multi-graph spatial encoder using **GATv2** (Graph Attention Networks v2) with l
 ### 2. Upload Module Files
 
 ```python
-# Upload spatial_gatv2_encoder.py, fusion_module.py, Graph_build.py to Colab
+# Upload MSRL.py, fusion_module.py, Graph_build.py to Colab
 ```
 
 ### 3. Use in Notebook
 
 ```python
 import torch
-from spatial_gatv2_encoder import SpatialGATv2EncoderBatched
+from MSRL import SpatialGATv2EncoderBatched
 from fusion_module import SpatialFusionModule
 from Graph_build import build_geo_matrices, build_static_adjacency, build_semantic_adjacency
 

@@ -5,9 +5,9 @@ import torch
 sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
 
 from Src.forecast_head import ForecastAndGraphLoss, ForecastHead
-from Src.future_spatial_dependency import FutureSpatialDependencyGenerator
-from Src.future_spatial_propagation import MultiGraphAdaptivePropagation
-from Src.temporal_conv_module import TemporalContextEncoder
+from Src.FSDG import FutureSpatialDependencyGenerator
+from Src.FSDP import MultiGraphAdaptivePropagation
+from Src.MTRL import TemporalContextEncoder
 
 
 class EndToEndForwardSmokeModel(torch.nn.Module):

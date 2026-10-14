@@ -4,7 +4,7 @@ import torch
 
 sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
 
-from Src.temporal_conv_module import TemporalContextEncoder, TemporalResidualBlock
+from Src.MTRL import TemporalContextEncoder, TemporalResidualBlock
 
 
 def test_temporal_context_encoder_compresses_time_without_cross_station_mix():

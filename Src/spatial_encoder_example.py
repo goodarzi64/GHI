@@ -13,9 +13,9 @@ import torch
 import torch.nn as nn
 from typing import List, Dict, Tuple, Optional
 
-from spatial_gatv2_encoder import SpatialGATv2EncoderBatched
+from MSRL import SpatialGATv2EncoderBatched
 from fusion_module import SpatialFusionModule
-from temporal_conv_module import TemporalConvModule
+from MTRL import TemporalConvModule
 
 # These utilities can still be used if imported from the same directory
 # from Graph_build import build_static_adjacency, build_semantic_adjacency, WindAdjacency

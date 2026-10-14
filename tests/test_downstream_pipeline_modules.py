@@ -13,8 +13,8 @@ from Src.Graph_build import (
     build_wind_cloud_adjacency,
     estimate_wind_kernel_scales,
 )
-from Src.future_spatial_dependency import FutureSpatialDependencyGenerator
-from Src.future_spatial_propagation import CurrentStateRefinement, MultiGraphAdaptivePropagation
+from Src.FSDG import FutureSpatialDependencyGenerator
+from Src.FSDP import CurrentStateRefinement, MultiGraphAdaptivePropagation
 
 
 def test_static_adjacency_accepts_precomputed_distances():

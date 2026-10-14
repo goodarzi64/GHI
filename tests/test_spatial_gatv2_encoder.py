@@ -4,7 +4,7 @@ import torch
 
 sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
 
-from Src.spatial_gatv2_encoder import SpatialGATv2EncoderBatched
+from Src.MSRL import SpatialGATv2EncoderBatched
 
 
 def test_shared_multigraph_gatv2_has_single_encoder_and_graph_specific_biases():
