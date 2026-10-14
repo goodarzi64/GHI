@@ -158,21 +158,11 @@ class StructuralBiasGATv2(MessagePassing):
             edge_weight = edge_weight.clamp_min(1e-8)
             log_edge_weight = torch.log(edge_weight)
 
-            if dim_size is None:
-                dim_size = int(index.max().item()) + 1 if index.numel() > 0 else 0
-
-            counts = torch.zeros(dim_size, device=log_edge_weight.device, dtype=log_edge_weight.dtype)
-            counts.scatter_add_(0, index, torch.ones_like(log_edge_weight))
-
-            mu = torch.zeros(dim_size, device=log_edge_weight.device, dtype=log_edge_weight.dtype)
-            mu.scatter_add_(0, index, log_edge_weight)
-            mu = mu / counts.clamp_min(1)
-
             if graph_beta is None:
                 graph_beta = 1.0
 
             graph_beta = torch.as_tensor(graph_beta, device=log_edge_weight.device, dtype=log_edge_weight.dtype)
-            bias_term = graph_beta * (log_edge_weight - mu[index])
+            bias_term = graph_beta * log_edge_weight
             logits = logits + bias_term.unsqueeze(-1)
 
         alpha = softmax(logits, index, ptr, dim_size)
