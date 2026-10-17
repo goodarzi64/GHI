@@ -11,7 +11,6 @@ from .Graph_build import (
     WindAdjacency,
 )
 from .data_structure import (
-    SplitArrays,
     TemporalFold,
     WindowedFold,
     WindowedSplit,
@@ -34,7 +33,6 @@ __all__ = [
     "build_dtw_graphs_from_timeseries",
     "estimate_wind_kernel_scales",
     "WindAdjacency",
-    "SplitArrays",
     "TemporalFold",
     "WindowedFold",
     "WindowedSplit",
