@@ -1,9 +1,4 @@
-"""
-Fusion Module for Multi-Graph Spatial Embeddings
-
-Combines outputs from three GATv2 spatial encoders (static, semantic, wind graphs)
-into a single unified spatial representation via learned fusion weights.
-"""
+"""Attention fusion for multi-graph spatial embeddings."""
 
 import torch
 import torch.nn as nn
@@ -68,47 +63,19 @@ class NodeAdaptiveMultiGraphFusion(nn.Module):
         return fused, alpha
 
 
-class LearnedWeightFusion(nn.Module):
-    """
-    Learnable fixed weights for each graph (simpler than attention).
-    
-    fusion = sum(w_i * z_i) where w_i are learnable scalars.
-    """
-    
-    def __init__(self, n_graphs: int = 3):
-        super().__init__()
-        self.weights = nn.Parameter(torch.ones(n_graphs) / n_graphs)
-    
-    def forward(self, embeddings: List[torch.Tensor]) -> torch.Tensor:
-        """
-        Fuse with learnable weights.
-        
-        Args:
-            embeddings: List of G embeddings, each [N, F] or [B, N, F]
-        
-        Returns:
-            Fused embedding [N, F] or [B, N, F]
-        """
-        alpha = F.softmax(self.weights, dim=0)
-        fused = torch.zeros_like(embeddings[0])
-        for i, emb in enumerate(embeddings):
-            fused = fused + alpha[i] * emb
-        return fused
-
-
 class SpatialFusionModule(nn.Module):
     """
     Complete fusion module that combines embeddings from three GATv2 encoders
     (static, semantic, wind graph types).
     
-    Supports multiple fusion strategies: attention or learned weights.
+    Uses node-adaptive attention to combine graph embeddings.
     """
     
     def __init__(
         self,
         embedding_dim: int,
         n_graphs: int = 3,
-        fusion_method: str = 'attention',  # 'attention', 'learned'
+        fusion_method: str = 'attention',
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -116,12 +83,9 @@ class SpatialFusionModule(nn.Module):
         self.n_graphs = n_graphs
         self.fusion_method = fusion_method
         
-        if fusion_method == 'attention':
-            self.fusion = NodeAdaptiveMultiGraphFusion(embedding_dim, n_graphs, dropout)
-        elif fusion_method == 'learned':
-            self.fusion = LearnedWeightFusion(n_graphs)
-        else:
-            raise ValueError(f"Unknown fusion method: {fusion_method}")
+        if fusion_method != 'attention':
+            raise ValueError(f"Unknown fusion method: {fusion_method}. Only 'attention' is supported.")
+        self.fusion = NodeAdaptiveMultiGraphFusion(embedding_dim, n_graphs, dropout)
     
     def forward(
         self,
@@ -139,17 +103,10 @@ class SpatialFusionModule(nn.Module):
             Fused embedding [N, F] or [B, N, F]
             optionally: fusion weights alpha
         """
-        if self.fusion_method == 'attention':
-            fused, alpha = self.fusion(embeddings)
-            if return_weights:
-                return fused, alpha
-            return fused
-        else:
-            return self.fusion(embeddings)
-
-
-# MultiScaleFusion removed — use SpatialFusionModule directly with desired method
-
+        fused, alpha = self.fusion(embeddings)
+        if return_weights:
+            return fused, alpha
+        return fused
 
 def create_fusion_module(
     embedding_dim: int,
@@ -163,12 +120,12 @@ def create_fusion_module(
     Args:
         embedding_dim: Dimension of embeddings to fuse
         n_graphs: Number of graphs / embeddings
-        fusion_type: 'attention', 'learned', 'multiscale'
+        fusion_type: Only 'attention' is supported.
         **kwargs: Additional arguments passed to the module
     
     Returns:
         Initialized fusion module
     """
-    if fusion_type not in ('attention', 'learned'):
-        raise ValueError(f"Unknown fusion_type: {fusion_type}. Supported: 'attention', 'learned'.")
+    if fusion_type != 'attention':
+        raise ValueError(f"Unknown fusion_type: {fusion_type}. Only 'attention' is supported.")
     return SpatialFusionModule(embedding_dim, n_graphs, fusion_type, **kwargs)

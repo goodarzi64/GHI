@@ -181,59 +181,14 @@ class StructuralBiasGATv2(MessagePassing):
         )
 
 
-class SpatialGATv2Encoder(nn.Module):
-    """
-    Multi-graph spatial encoder that reuses one GATv2 layer across all graphs.
-    """
-
-    def __init__(
-        self,
-        in_features: int,
-        out_features: int,
-        n_graphs: int = 3,
-        heads: int = 8,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.n_graphs = n_graphs
-        self.gat = StructuralBiasGATv2(
-            in_features,
-            out_features,
-            heads=heads,
-            concat=True,
-            negative_slope=0.2,
-            dropout=dropout,
-            bias=True,
-            share_weights=True,
-        )
-        self.graph_betas = nn.Parameter(torch.ones(n_graphs))
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        edge_indices: list,
-        edge_weights: list,
-    ) -> list:
-        embeddings = []
-        for graph_idx, (edge_index, edge_weight) in enumerate(zip(edge_indices, edge_weights)):
-            emb = self.gat(
-                x,
-                edge_index,
-                edge_weight=edge_weight,
-                graph_beta=self.graph_betas[graph_idx],
-            )
-            embeddings.append(emb)
-        return embeddings
-
-
 class SpatialGATv2EncoderBatched(nn.Module):
     """
     Batched multi-graph encoder that reuses the same GATv2 layer across graphs.
 
     The graph identity is retained by using a separate beta_g for each adjacency,
-    while the shared attention parameters remain common to all graphs.
+    while the shared attention parameters remain common to all graphs. Dense
+    adjacency matrices can be passed directly as ``[N, N]`` or ``[B, N, N]``
+    tensors in ``adjacencies``. They use the convention ``A[dst, src]``.
     """
 
     def __init__(
@@ -256,67 +211,102 @@ class SpatialGATv2EncoderBatched(nn.Module):
             negative_slope=0.2,
             dropout=dropout,
             bias=True,
-            share_weights=True,
+            share_weights=False,
         )
         self.graph_betas = nn.Parameter(torch.ones(n_graphs))
 
     @staticmethod
-    def _flatten_batched_dense_adjacencies(
-        edge_index: Tensor,
-        edge_weight: Tensor,
+    def _dense_adjacency_to_edges(
+        adjacency: Tensor,
+        batch_size: int,
         num_nodes: int,
     ) -> Tuple[Tensor, Tensor]:
-        if edge_weight.dim() == 2:
-            return edge_index, edge_weight
-
-        if edge_weight.dim() != 3:
-            raise ValueError(f"Expected dense adjacency with shape [B, N, N], got {tuple(edge_weight.shape)}")
+        """Convert dense ``A[dst, src]`` matrices to PyG edges for a batch."""
+        if adjacency.dim() == 2:
+            if adjacency.shape != (num_nodes, num_nodes):
+                raise ValueError(
+                    f"Expected adjacency shape [{num_nodes}, {num_nodes}], "
+                    f"got {tuple(adjacency.shape)}."
+                )
+            adjacency = adjacency.unsqueeze(0).expand(batch_size, -1, -1)
+        elif adjacency.dim() == 3:
+            if adjacency.shape != (batch_size, num_nodes, num_nodes):
+                raise ValueError(
+                    f"Expected adjacency shape [{batch_size}, {num_nodes}, {num_nodes}], "
+                    f"got {tuple(adjacency.shape)}."
+                )
+        else:
+            raise ValueError(
+                f"Expected dense adjacency [N, N] or [B, N, N], got {tuple(adjacency.shape)}."
+            )
 
         edge_indices = []
         edge_weights = []
-        batch_size = edge_weight.size(0)
-
         for batch_idx in range(batch_size):
-            A_b = edge_weight[batch_idx]
+            A_b = adjacency[batch_idx]
             edges = torch.nonzero(A_b, as_tuple=False)
             if edges.numel() == 0:
                 continue
-            src = edges[:, 0]
-            dst = edges[:, 1]
-            weights = A_b[src, dst]
+            dst = edges[:, 0]
+            src = edges[:, 1]
+            weights = A_b[dst, src]
             src = src + batch_idx * num_nodes
             dst = dst + batch_idx * num_nodes
             edge_indices.append(torch.stack([src, dst], dim=0))
             edge_weights.append(weights)
 
         if not edge_indices:
-            return torch.empty((2, 0), device=edge_weight.device, dtype=torch.long), torch.empty((0,), device=edge_weight.device, dtype=edge_weight.dtype)
+            return (
+                torch.empty((2, 0), device=adjacency.device, dtype=torch.long),
+                torch.empty((0,), device=adjacency.device, dtype=adjacency.dtype),
+            )
 
         return torch.cat(edge_indices, dim=1), torch.cat(edge_weights, dim=0)
 
     def forward(
         self,
         x_batch: torch.Tensor,
-        edge_indices: list,
-        edge_weights: list,
+        adjacencies: list,
+        edge_weights: Optional[list] = None,
     ) -> list:
-        B, N, F_in = x_batch.shape
-        embeddings = []
+        """Encode each graph from dense adjacency matrices or legacy edge lists.
 
-        for graph_idx, (edge_index, edge_weight) in enumerate(zip(edge_indices, edge_weights)):
+        Args:
+            x_batch: Node features shaped ``[B, N, F_in]``.
+            adjacencies: Dense matrices shaped ``[N, N]`` or ``[B, N, N]``
+                when ``edge_weights`` is omitted. For backward compatibility,
+                this may instead be a list of PyG ``edge_index`` tensors when
+                ``edge_weights`` is also supplied.
+            edge_weights: Optional list of edge weights paired with legacy
+                ``edge_index`` inputs.
+        """
+        if x_batch.dim() != 3:
+            raise ValueError(f"x_batch must have shape [B, N, F], got {tuple(x_batch.shape)}.")
+        B, N, F_in = x_batch.shape
+        if len(adjacencies) != self.n_graphs:
+            raise ValueError(f"Expected {self.n_graphs} graphs, got {len(adjacencies)}.")
+        if edge_weights is not None and len(edge_weights) != len(adjacencies):
+            raise ValueError("edge_indices and edge_weights must contain the same number of graphs.")
+
+        embeddings = []
+        for graph_idx, graph in enumerate(adjacencies):
             x_flat = x_batch.reshape(B * N, F_in)
 
-            if edge_weight is not None:
-                if edge_weight.dim() == 3:
-                    edge_index_flat, edge_weight_flat = self._flatten_batched_dense_adjacencies(
-                        edge_index,
-                        edge_weight,
-                        N,
+            if edge_weights is None:
+                graph = graph.to(device=x_batch.device, dtype=x_batch.dtype)
+                edge_index_flat, edge_weight_flat = self._dense_adjacency_to_edges(
+                    graph, B, N
+                )
+            else:
+                edge_index = graph
+                edge_weight = edge_weights[graph_idx]
+                if edge_weight is not None and edge_weight.dim() == 3:
+                    edge_weight = edge_weight.to(device=x_batch.device, dtype=x_batch.dtype)
+                    edge_index_flat, edge_weight_flat = self._dense_adjacency_to_edges(
+                        edge_weight, B, N
                     )
                 else:
                     edge_index_flat, edge_weight_flat = edge_index, edge_weight
-            else:
-                edge_index_flat, edge_weight_flat = edge_index, None
 
             emb_flat = self.gat(
                 x_flat,

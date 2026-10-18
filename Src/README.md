@@ -6,13 +6,11 @@ Multi-graph spatial encoder using **GATv2** (Graph Attention Networks v2) with l
 
 - **`MSRL.py`**: GATv2 encoders with edge weight bias (β·log(A))
   - `GATv2EdgeBiasConv`: Single GATv2 layer with edge bias
-  - `SpatialGATv2Encoder`: Unbatched encoder for 3 graphs
-  - `SpatialGATv2EncoderBatched`: Batched version for Colab training
+  - `SpatialGATv2EncoderBatched`: Multi-graph encoder for batched inputs (use batch size 1 for a single sample)
 
 - **`fusion_module.py`**: Fusion strategies for combining graph embeddings
   - `AttentionFusion`: Context-aware node-wise attention over all 3 graphs
   - `ConcatFusion`: Concatenate + project
-  - `LearnedWeightFusion`: Fixed learnable weights
   - `SpatialFusionModule`: Main module with strategy selection
   - `MultiScaleFusion`: Hierarchical fusion (advanced)
 
@@ -61,7 +59,7 @@ encoder = SpatialGATv2EncoderBatched(
 fusion = SpatialFusionModule(
     embedding_dim=64,
     n_graphs=3,
-    fusion_method='attention',  # or 'concat', 'learned'
+    fusion_method='attention',
 )
 
 # Forward pass
@@ -113,7 +111,7 @@ Fused: z = α₀·emb_static + α₁·emb_dynamic + α₂·emb_wind
 ### SpatialFusionModule
 - `embedding_dim`: Must match encoder's `out_features`
 - `n_graphs`: Always 3
-- `fusion_method`: 'attention' (context-aware joint scoring), 'concat' (concatenate+project), 'learned' (fixed scalars)
+- `fusion_method`: 'attention' (context-aware, node-wise graph weighting)
 - `dropout`: Dropout in fusion network
 
 ## Integration with Encoder-Decoder
