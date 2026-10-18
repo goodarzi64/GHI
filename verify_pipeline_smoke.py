@@ -19,7 +19,7 @@ np.savez(root / 'precomputed_graphs' / 'static_graph.npz', static_graph=adj)
 
 folds = load_windowed_drive_folds(
     str(root),
-    W=3,
+    T=3,
     H=1,
     stride=1,
     val_duration=0,

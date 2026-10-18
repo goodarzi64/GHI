@@ -32,10 +32,10 @@ class WindowedSplit:
     Windowed arrays for one split.
 
     Shapes:
-    - ``x``: [B, W, N, F_in]
+    - ``x``: [B, T, N, F_in]
     - ``y``: [B, H, N, F_out]
-    - ``historical_graphs[name]``: [B, W, N, N]
-    - ``future_graphs[name]``: [B, H, N, N]
+    - ``historical_graphs[name]``: [N, N] for static graphs or [B, T, N, N]
+    - ``future_graphs[name]``: [N, N] for static graphs or [B, H, N, N]
     """
 
     x: np.ndarray
@@ -128,7 +128,7 @@ def build_windowed_folds(
     graphs: Mapping[str, np.ndarray],
     folds: Sequence[TemporalFold],
     *,
-    W: int,
+    T: int,
     H: int,
     stride: int = 1,
     input_mask: MaskLike = None,
@@ -142,7 +142,7 @@ def build_windowed_folds(
         tensor: Node features shaped [T, N, F].
         graphs: Graph arrays shaped [N, N] or [T, N, N].
         folds: Split definitions from ``make_expanding_folds``.
-        W: Historical input window length.
+        T: Historical input window length.
         H: Future horizon length.
         stride: Sliding window stride.
         input_mask: Feature mask/key used for ``x``.
@@ -151,7 +151,7 @@ def build_windowed_folds(
         target_tensor: Optional target array shaped [T, N] or [T, N, F_out].
     """
     _validate_temporal_tensor(tensor, "tensor")
-    _validate_positive("W", W)
+    _validate_positive("T", T)
     _validate_positive("H", H)
     _validate_positive("stride", stride)
 
@@ -172,7 +172,7 @@ def build_windowed_folds(
             y_source,
             selected_graphs,
             fold.train_slice,
-            W=W,
+            T=T,
             H=H,
             stride=stride,
         )
@@ -182,7 +182,7 @@ def build_windowed_folds(
                 y_source,
                 selected_graphs,
                 fold.val_slice,
-                W=W,
+                T=T,
                 H=H,
                 stride=stride,
             )
@@ -194,7 +194,7 @@ def build_windowed_folds(
             y_source,
             selected_graphs,
             fold.test_slice,
-            W=W,
+            T=T,
             H=H,
             stride=stride,
         )
@@ -217,28 +217,28 @@ def build_windowed_split(
     graphs: Mapping[str, np.ndarray],
     time_slice: TimeSlice,
     *,
-    W: int,
+    T: int,
     H: int,
     stride: int = 1,
 ) -> WindowedSplit:
     """Build one split with ``x``, ``y``, historical graphs, and future graphs."""
     start, end = time_slice
-    last_start = end - W - H
+    last_start = end - T - H
     if last_start < start:
         raise ValueError(
-            f"Slice {time_slice} is too short for W={W} and H={H}; "
-            f"it needs at least {W + H} timesteps."
+            f"Slice {time_slice} is too short for T={T} and H={H}; "
+            f"it needs at least {T + H} timesteps."
         )
 
     starts = np.arange(start, last_start + 1, stride, dtype=np.int64)
-    x = np.stack([x_source[i : i + W] for i in starts], axis=0)
-    y = np.stack([y_source[i + W : i + W + H] for i in starts], axis=0)
+    x = np.stack([x_source[i : i + T] for i in starts], axis=0)
+    y = np.stack([y_source[i + T : i + T + H] for i in starts], axis=0)
 
     historical_graphs: Dict[str, np.ndarray] = {}
     future_graphs: Dict[str, np.ndarray] = {}
     for name, graph in graphs.items():
-        historical_graphs[name] = _window_graph(graph, starts, W, offset=0)
-        future_graphs[name] = _window_graph(graph, starts, H, offset=W)
+        historical_graphs[name] = _window_graph(graph, starts, T, offset=0)
+        future_graphs[name] = _window_graph(graph, starts, H, offset=T)
 
     return WindowedSplit(
         x=x,
@@ -251,7 +251,7 @@ def build_windowed_split(
 def load_windowed_drive_folds(
     base_dir: str,
     *,
-    W: int,
+    T: int,
     H: int,
     val_duration: int,
     test_duration: int,
@@ -308,7 +308,7 @@ def load_windowed_drive_folds(
         tensor,
         graphs,
         folds,
-        W=W,
+        T=T,
         H=H,
         stride=stride,
         input_mask=input_mask,
@@ -455,7 +455,7 @@ def _validate_graphs(
 
 def _window_graph(graph: np.ndarray, starts: np.ndarray, length: int, *, offset: int) -> np.ndarray:
     if graph.ndim == 2:
-        return np.broadcast_to(graph, (len(starts), length, *graph.shape)).copy()
+        return graph
     return np.stack([graph[i + offset : i + offset + length] for i in starts], axis=0)
 
 

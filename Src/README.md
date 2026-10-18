@@ -18,7 +18,6 @@ Multi-graph spatial encoder using **GATv2** (Graph Attention Networks v2) with l
   - `TemporalBranch`: Conv1D branch with dilation and layer norm
   - `TemporalConvModule`: Temporal model that operates on fused spatial features over time and aggregates temporal kernels into one unified output
 
-- **`spatial_encoder_example.py`**: Complete integration example & Colab usage
 
 - **`Graph_build.py`**: Adjacency matrix construction (from GHI_forecasting)
   - Static graph (geographic distance)
