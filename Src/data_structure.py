@@ -231,8 +231,10 @@ def build_windowed_split(
         )
 
     starts = np.arange(start, last_start + 1, stride, dtype=np.int64)
-    x = np.stack([x_source[i : i + T] for i in starts], axis=0)
-    y = np.stack([y_source[i + T : i + T + H] for i in starts], axis=0)
+    # Keep overlapping feature and target windows as views as well; stacking
+    # them would duplicate the same source timesteps thousands of times.
+    x = _window_series(x_source, starts, T, offset=0)
+    y = _window_series(y_source, starts, H, offset=T)
 
     historical_graphs: Dict[str, np.ndarray] = {}
     future_graphs: Dict[str, np.ndarray] = {}
@@ -462,7 +464,27 @@ def _validate_graphs(
 def _window_graph(graph: np.ndarray, starts: np.ndarray, length: int, *, offset: int) -> np.ndarray:
     if graph.ndim == 2:
         return graph
-    return np.stack([graph[i + offset : i + offset + length] for i in starts], axis=0)
+    # A copied window tensor scales as [windows, length, N, N] and can dwarf
+    # the source graph arrays. Sliding windows are views, so the source graph
+    # storage is shared while batches can still index the usual [B,L,N,N] shape.
+    window_width = offset + length
+    windows = np.lib.stride_tricks.sliding_window_view(
+        graph, window_width, axis=0
+    ).transpose(0, 3, 1, 2)
+    step = int(starts[1] - starts[0]) if len(starts) > 1 else 1
+    return windows[int(starts[0]) : int(starts[-1]) + 1 : step, offset : offset + length]
+
+
+def _window_series(series: np.ndarray, starts: np.ndarray, length: int, *, offset: int) -> np.ndarray:
+    """Return [B,L,...] overlapping temporal windows as a shared-memory view."""
+    window_width = offset + length
+    windows = np.lib.stride_tricks.sliding_window_view(
+        series, window_width, axis=0
+    )
+    # sliding_window_view appends the time-window axis at the end.
+    windows = np.moveaxis(windows, -1, 1)
+    step = int(starts[1] - starts[0]) if len(starts) > 1 else 1
+    return windows[int(starts[0]) : int(starts[-1]) + 1 : step, offset : offset + length]
 
 
 def _validate_temporal_tensor(array: np.ndarray, name: str) -> None:
