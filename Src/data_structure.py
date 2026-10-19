@@ -267,7 +267,7 @@ def load_windowed_drive_folds(
         "wind_cloud_graphs.npz",
         "dtw_graphs.npz",
     ),
-    graph_array_keys: Mapping[str, str],
+    graph_array_keys: Mapping[str, str | Sequence[str]],
     allow_pickle: bool = True,
 ) -> List[WindowedFold]:
     """
@@ -324,7 +324,7 @@ def load_graph_arrays(
         "wind_cloud_graphs.npz",
         "dtw_graphs.npz",
     ),
-    graph_array_keys: Mapping[str, str],
+    graph_array_keys: Mapping[str, str | Sequence[str]],
     allow_pickle: bool = True,
 ) -> Dict[str, np.ndarray]:
     """Load explicitly keyed arrays from existing graph files.
@@ -343,8 +343,14 @@ def load_graph_arrays(
             continue
 
         arrays = load_npz_arrays(path, allow_pickle=allow_pickle)
-        array_key = graph_array_keys.get(artifact_name, graph_array_keys.get(filename))
-        graphs[artifact_name] = select_array(arrays, array_key, ndim=None)
+        array_keys = graph_array_keys.get(artifact_name, graph_array_keys.get(filename))
+        if isinstance(array_keys, str):
+            graphs[artifact_name] = select_array(arrays, array_keys, ndim=None)
+        elif array_keys is not None:
+            for array_key in array_keys:
+                graphs[f"{artifact_name}:{array_key}"] = select_array(
+                    arrays, array_key, ndim=None
+                )
 
     if not graphs:
         raise FileNotFoundError(f"No graph files found in: {graph_dir}")
