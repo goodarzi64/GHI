@@ -7,17 +7,21 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from Src.FSDP import CurrentStateAnchor
-from Src.FSDG import FutureSpatialDependencyGenerator
-from Src.LGEE import LatentGraphEvolutionEncoder
-from Src.MSRL import SpatialGATv2EncoderBatched
-from Src.MTRL import TemporalContextEncoder
-from Src.fusion_module import SpatialFusionModule
-from Src.forecast_head import ForecastHead
-from Src.FSDP import MultiGraphAdaptivePropagation
+from Src.anchor import CurrentStateAnchor
 
 
 def _pipeline_class():
+    import pytest
+
+    pytest.importorskip("torch_geometric")
+    from Src.FSDG import FutureSpatialDependencyGenerator
+    from Src.LGEE import LatentGraphEvolutionEncoder
+    from Src.MSRL import SpatialGATv2EncoderBatched
+    from Src.MTRL import TemporalContextEncoder
+    from Src.fusion_module import SpatialFusionModule
+    from Src.forecast_head import ForecastHead
+    from Src.FSDP import MultiGraphAdaptivePropagation
+
     notebook = json.loads((REPO_ROOT / "NoteBooks" / "pipeline.ipynb").read_text(encoding="utf-8"))
     cell = next(cell for cell in notebook["cells"] if "class SpatiotemporalForecastingPipeline" in "".join(cell.get("source", [])))
     namespace = {
@@ -74,6 +78,7 @@ def test_pipeline_forward_with_anchor_enabled_and_disabled():
     x_seq = torch.randn(batch, time, nodes, features)
     static = torch.eye(nodes)
     dynamic = torch.rand(batch, time, nodes, nodes)
+    cov_fut = torch.randn(batch, horizons, nodes, 5)
     graphs = {
         "static_graph:A_topk": static,
         "wind_cloud_graphs:A_topk": dynamic,
@@ -93,8 +98,10 @@ def test_pipeline_forward_with_anchor_enabled_and_disabled():
             heads=2,
             dropout=0.0,
             use_anchor=use_anchor,
+            cov_dim=5,
+            use_cov_queries=True,
         )
-        result = model(x_seq, graphs)
+        result = model(x_seq, graphs, cov_fut)
         assert result["forecast"].shape == (batch, horizons, nodes)
         assert torch.isfinite(result["forecast"]).all()
         assert (model.anchor is not None) is use_anchor

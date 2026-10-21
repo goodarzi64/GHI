@@ -8,7 +8,7 @@ import numpy as np
 
 
 TimeSlice = Tuple[int, int]
-MaskLike = Optional[str | Sequence[bool] | np.ndarray]
+MaskLike = Optional[str | Sequence[bool] | Sequence[int] | np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -36,12 +36,14 @@ class WindowedSplit:
     - ``y``: [B, H, N, F_out]
     - ``historical_graphs[name]``: [N, N] for static graphs or [B, T, N, N]
     - ``future_graphs[name]``: [N, N] for static graphs or [B, H, N, N]
+    - ``cov_future``: optional [B, H, N, K] deterministic future covariates
     """
 
     x: np.ndarray
     y: np.ndarray
     historical_graphs: Dict[str, np.ndarray]
     future_graphs: Dict[str, np.ndarray]
+    cov_future: Optional[np.ndarray] = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +135,7 @@ def build_windowed_folds(
     stride: int = 1,
     input_mask: MaskLike = None,
     output_mask: MaskLike = None,
+    cov_mask: MaskLike = None,
     target_tensor: Optional[np.ndarray] = None,
 ) -> List[WindowedFold]:
     """
@@ -148,6 +151,8 @@ def build_windowed_folds(
         input_mask: Feature mask/key used for ``x``.
         output_mask: Feature mask/key used for ``y`` when ``target_tensor`` is
             not provided.
+        cov_mask: Optional boolean feature mask or ordered feature indices for
+            deterministic future covariates.
         target_tensor: Optional target array shaped [T, N] or [T, N, F_out].
     """
     _validate_temporal_tensor(tensor, "tensor")
@@ -156,6 +161,7 @@ def build_windowed_folds(
     _validate_positive("stride", stride)
 
     x_source = _select_features(tensor, input_mask)
+    cov_source = _select_features(tensor, cov_mask) if cov_mask is not None else None
     if target_tensor is None:
         y_source = _select_features(tensor, output_mask)
     else:
@@ -175,6 +181,7 @@ def build_windowed_folds(
             T=T,
             H=H,
             stride=stride,
+            cov_source=cov_source,
         )
         val = (
             build_windowed_split(
@@ -185,6 +192,7 @@ def build_windowed_folds(
                 T=T,
                 H=H,
                 stride=stride,
+                cov_source=cov_source,
             )
             if fold.val_slice is not None
             else None
@@ -197,6 +205,7 @@ def build_windowed_folds(
             T=T,
             H=H,
             stride=stride,
+            cov_source=cov_source,
         )
         windowed.append(
             WindowedFold(
@@ -220,6 +229,7 @@ def build_windowed_split(
     T: int,
     H: int,
     stride: int = 1,
+    cov_source: Optional[np.ndarray] = None,
 ) -> WindowedSplit:
     """Build one split with ``x``, ``y``, historical graphs, and future graphs."""
     start, end = time_slice
@@ -235,6 +245,11 @@ def build_windowed_split(
     # them would duplicate the same source timesteps thousands of times.
     x = _window_series(x_source, starts, T, offset=0)
     y = _window_series(y_source, starts, H, offset=T)
+    cov_future = (
+        _window_series(cov_source, starts, H, offset=T)
+        if cov_source is not None
+        else None
+    )
 
     historical_graphs: Dict[str, np.ndarray] = {}
     future_graphs: Dict[str, np.ndarray] = {}
@@ -247,6 +262,7 @@ def build_windowed_split(
         y=y,
         historical_graphs=historical_graphs,
         future_graphs=future_graphs,
+        cov_future=cov_future,
     )
 
 
@@ -263,6 +279,7 @@ def load_windowed_drive_folds(
     tensor_array_key: str,
     input_mask_key: Optional[str] = "mask_forecast",
     output_mask_key: Optional[str] = None,
+    cov_mask: MaskLike = None,
     graph_dirname: str = "precomputed_graphs",
     graph_filenames: Sequence[str] = (
         "static_graph.npz",
@@ -293,6 +310,7 @@ def load_windowed_drive_folds(
 
     input_mask = resolve_mask(tensor_arrays, input_mask_key)
     output_mask = resolve_mask(tensor_arrays, output_mask_key)
+    cov_mask_resolved = resolve_mask(tensor_arrays, cov_mask)
     graphs = load_graph_arrays(
         os.path.join(base_dir, graph_dirname),
         graph_filenames=graph_filenames,
@@ -315,6 +333,7 @@ def load_windowed_drive_folds(
         stride=stride,
         input_mask=input_mask,
         output_mask=output_mask,
+        cov_mask=cov_mask_resolved,
     )
 
 
@@ -400,7 +419,7 @@ def resolve_mask(arrays: Mapping[str, np.ndarray], mask: MaskLike) -> Optional[n
     if mask is None:
         return None
     if not isinstance(mask, str):
-        return np.asarray(mask, dtype=bool)
+        return np.asarray(mask)
 
     if mask in arrays:
         return np.asarray(arrays[mask], dtype=bool)
@@ -424,13 +443,18 @@ def load_npz_arrays(npz_path: str, *, allow_pickle: bool = True) -> Dict[str, np
 
 
 def _select_features(array: np.ndarray, mask: MaskLike) -> np.ndarray:
-    mask_array = np.asarray(mask, dtype=bool) if mask is not None else None
+    mask_array = np.asarray(mask) if mask is not None else None
     if mask_array is None:
         return array
-    if mask_array.ndim != 1 or mask_array.shape[0] != array.shape[-1]:
-        raise ValueError(
-            f"Feature mask must have shape [{array.shape[-1]}], got {mask_array.shape}."
-        )
+    if mask_array.ndim != 1:
+        raise ValueError(f"Feature mask must be one-dimensional, got {mask_array.shape}.")
+    if mask_array.dtype == bool:
+        if mask_array.shape[0] != array.shape[-1]:
+            raise ValueError(
+                f"Boolean feature mask must have shape [{array.shape[-1]}], got {mask_array.shape}."
+            )
+    elif not np.issubdtype(mask_array.dtype, np.integer):
+        raise TypeError("Feature mask must contain booleans or integer feature indices.")
     return array[..., mask_array]
 
 

@@ -130,13 +130,18 @@ class LatentGraphEvolutionEncoder(nn.Module):
         dropout: float = 0.1,
         ff_hidden_dim: int | None = None,
         num_blocks: int = 1,
+        cov_dim: int | None = None,
     ):
         super().__init__()
         self.latent_dim = latent_dim
         self.num_horizons = num_horizons
         self.dropout = dropout
+        self.cov_dim = cov_dim
 
-        self.horizon_embeddings = nn.Parameter(torch.randn(num_horizons, latent_dim))
+        self.horizon_embeddings = nn.Parameter(torch.empty(num_horizons, latent_dim))
+        nn.init.normal_(self.horizon_embeddings, mean=0.0, std=0.02)
+        self.cov_projection = nn.Linear(cov_dim, latent_dim) if cov_dim is not None else None
+        self.state_projection = nn.Linear(latent_dim, latent_dim)
         self.blocks = nn.ModuleList(
             [
                 HorizonAwareCrossAttentionBlock(
@@ -165,16 +170,39 @@ class LatentGraphEvolutionEncoder(nn.Module):
         """Reshape [B*N, H, C] back to [B, H, N, C]."""
         return x.reshape(batch_size, num_nodes, self.num_horizons, self.latent_dim).permute(0, 2, 1, 3)
 
-    def forward(self, z_hist: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        z_hist: torch.Tensor,
+        cov_fut: torch.Tensor | None = None,
+        z_state: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Produce horizon-conditioned latent graph evolution contexts.
 
         Args:
             z_hist: [B, W, N, C]
+            cov_fut: Optional deterministic future covariates [B, H, N, K].
+            z_state: Optional current state [B, N, C].
 
         Returns:
             [B, H, N, C]
         """
         z_flat, queries, (batch_size, num_nodes) = self._prepare_inputs(z_hist)
+        if cov_fut is not None:
+            if self.cov_projection is None:
+                raise ValueError("cov_fut was provided but cov_dim is None")
+            expected = (batch_size, self.num_horizons, num_nodes, self.cov_dim)
+            if tuple(cov_fut.shape) != expected:
+                raise ValueError(f"Expected cov_fut shape {expected}, got {tuple(cov_fut.shape)}")
+            cov_flat = cov_fut.permute(0, 2, 1, 3).reshape(
+                batch_size * num_nodes, self.num_horizons, self.cov_dim
+            )
+            queries = queries + self.cov_projection(cov_flat)
+        if z_state is not None:
+            expected = (batch_size, num_nodes, self.latent_dim)
+            if tuple(z_state.shape) != expected:
+                raise ValueError(f"Expected z_state shape {expected}, got {tuple(z_state.shape)}")
+            state_flat = z_state.reshape(batch_size * num_nodes, 1, self.latent_dim)
+            queries = queries + self.state_projection(state_flat)
         keys = z_flat
         values = z_flat
 
