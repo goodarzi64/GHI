@@ -29,7 +29,7 @@ def test_shared_multigraph_gatv2_has_single_encoder_and_graph_specific_biases():
     out = encoder(x_batch, [edge_index, edge_index, edge_index], [adj, adj, adj])
 
     assert len(out) == 3
-    assert all(o.shape == (2, 5, 16 * 2) for o in out)
+    assert all(o.shape == (2, 5, 16) for o in out)
     assert torch.isfinite(torch.stack(out, dim=0)).all()
 
 

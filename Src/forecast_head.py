@@ -91,10 +91,28 @@ class ForecastAndGraphLoss(nn.Module):
     def _graph_reconstruction_loss(self, pred_graph: torch.Tensor, target_graph: torch.Tensor) -> torch.Tensor:
         if pred_graph.dim() != target_graph.dim():
             raise ValueError(f"Expected matching graph tensor dims, got {tuple(pred_graph.shape)} and {tuple(target_graph.shape)}")
-        return self._huber_loss(pred_graph, target_graph)
+        if pred_graph.shape != target_graph.shape:
+            raise ValueError(
+                f"Expected matching graph tensor shapes, got {tuple(pred_graph.shape)} "
+                f"and {tuple(target_graph.shape)}"
+            )
+        if pred_graph.shape[-1] != pred_graph.shape[-2]:
+            raise ValueError(f"Expected square graph matrices, got {tuple(pred_graph.shape)}")
+
+        num_nodes = pred_graph.shape[-1]
+        if num_nodes < 2:
+            return pred_graph.sum() * 0.0
+        off_diagonal = ~torch.eye(num_nodes, dtype=torch.bool, device=pred_graph.device)
+        return self._huber_loss(pred_graph[..., off_diagonal], target_graph[..., off_diagonal])
 
     def _sparsity_penalty(self, graph: torch.Tensor) -> torch.Tensor:
-        return graph.abs().mean()
+        if graph.shape[-1] != graph.shape[-2]:
+            raise ValueError(f"Expected square graph matrices, got {tuple(graph.shape)}")
+        num_nodes = graph.shape[-1]
+        if num_nodes < 2:
+            return graph.sum() * 0.0
+        off_diagonal = ~torch.eye(num_nodes, dtype=torch.bool, device=graph.device)
+        return graph[..., off_diagonal].abs().mean()
 
     def forward(
         self,

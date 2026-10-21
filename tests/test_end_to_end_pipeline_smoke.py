@@ -25,20 +25,21 @@ class EndToEndForwardSmokeModel(torch.nn.Module):
             dilation_list=[1, 2, 4],
             dropout=0.0,
         )
+        latent_dim = 2 * hidden_dim
         self.graph_generator = FutureSpatialDependencyGenerator(
-            latent_dim=hidden_dim,
-            hidden_dim=2 * hidden_dim,
+            latent_dim=latent_dim,
+            hidden_dim=2 * latent_dim,
             residual_scale=0.1,
         )
         self.propagator = MultiGraphAdaptivePropagation(
-            channels=hidden_dim,
+            channels=latent_dim,
             num_horizons=num_horizons,
             propagation_steps=2,
             alpha=0.1,
             dropout=0.0,
             use_refinement=False,
         )
-        self.forecast_head = ForecastHead(channels=hidden_dim, dropout=0.0)
+        self.forecast_head = ForecastHead(channels=latent_dim, dropout=0.0)
         self.loss_fn = ForecastAndGraphLoss(forecast_weight=1.0, graph_weight=0.1)
 
     def forward(self, x_seq: torch.Tensor, a_phys: torch.Tensor, a_wind_current: torch.Tensor, a_sem_current: torch.Tensor, target: torch.Tensor):
@@ -97,11 +98,11 @@ def test_end_to_end_forward_smoke():
     assert out['x_seq'].shape == (B, T, N, F)
     assert out['z_hist'].shape[0] == B
     assert out['z_hist'].shape[2] == N
-    assert out['z_hist'].shape[3] == 8
-    assert out['z_graph'].shape == (B, H, N, 8)
+    assert out['z_hist'].shape[3] == 16
+    assert out['z_graph'].shape == (B, H, N, 16)
     assert out['a_wind_hat'].shape == (B, H, N, N)
     assert out['a_sem_hat'].shape == (B, H, N, N)
-    assert out['h_future'].shape == (B, H, N, 8)
+    assert out['h_future'].shape == (B, H, N, 16)
     assert out['forecast'].shape == (B, H, N)
     assert torch.isfinite(out['forecast']).all()
     assert torch.isfinite(out['loss'])
@@ -115,14 +116,14 @@ def test_temporal_encoder_and_graph_generator_still_have_valid_interface():
     z_hist = encoder(x_seq)
     assert z_hist.shape[0] == 2
     assert z_hist.shape[2] == 5
-    assert z_hist.shape[3] == 8
+    assert z_hist.shape[3] == 16
 
     z_current = z_hist[:, -1, :, :]
     z_graph = z_current.unsqueeze(1).expand(-1, 3, -1, -1)
-    graph_gen = FutureSpatialDependencyGenerator(latent_dim=8, hidden_dim=16, residual_scale=0.1)
+    graph_gen = FutureSpatialDependencyGenerator(latent_dim=16, hidden_dim=32, residual_scale=0.1)
     a_wind_hat, a_sem_hat = graph_gen(z_graph, torch.rand(2, 5, 5), torch.rand(2, 5, 5))
 
-    assert z_graph.shape == (2, 3, 5, 8)
+    assert z_graph.shape == (2, 3, 5, 16)
     assert a_wind_hat.shape == (2, 3, 5, 5)
     assert a_sem_hat.shape == (2, 3, 5, 5)
 

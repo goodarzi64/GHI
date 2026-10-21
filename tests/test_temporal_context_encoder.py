@@ -17,7 +17,7 @@ def test_temporal_context_encoder_compresses_time_without_cross_station_mix():
     assert out.shape[0] == x.shape[0]
     assert out.shape[1] < x.shape[1]
     assert out.shape[2] == x.shape[2]
-    assert out.shape[3] == 8
+    assert out.shape[3] == 16
 
     # Ensure no cross-station mixing by checking that each station path is independent.
     y = out[:, :, 0, :]

@@ -22,6 +22,10 @@ Output
 ------
 Z_graph: [B, H, N, C]
     Horizon-conditioned latent graph evolution contexts.
+
+When consuming ``TemporalContextEncoder`` output, configure ``latent_dim`` to
+``2 * out_channels`` because MTRL applies a channel projection after temporal
+pooling.
 """
 
 from __future__ import annotations
@@ -114,6 +118,9 @@ class LatentGraphEvolutionEncoder(nn.Module):
     produces a horizon-specific latent graph representation [B, H, N, C]. Each
     forecasting horizon has its own learnable query embedding, enabling the model
     to attend to different parts of the historical trajectory.
+
+    ``latent_dim`` must match the final channel dimension of the supplied
+    trajectory. For MTRL output, this is twice MTRL's ``out_channels``.
     """
 
     def __init__(

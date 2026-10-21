@@ -141,7 +141,7 @@ class TemporalContextEncoder(nn.Module):
         [B, T, N, C]
 
     Output:
-        [B, W, N, C_out]
+        [B, W, N, 2 * C_out]
 
     Each block applies causal dilated convolutions, so no temporal position
     uses information from later positions. The temporal dimension is then
@@ -166,6 +166,7 @@ class TemporalContextEncoder(nn.Module):
         self.out_channels = (
             in_channels if out_channels is None else out_channels
         )
+        self.output_channels = 2 * self.out_channels
         self.num_blocks = num_blocks
         self.kernel_size = kernel_size
         self.dropout = dropout
@@ -196,6 +197,14 @@ class TemporalContextEncoder(nn.Module):
                     dropout=dropout,
                 )
             )
+
+        # Applied independently at every remaining time position and node.
+        self.short_sequence_projection = (
+            nn.Linear(in_channels, self.out_channels)
+            if in_channels != self.out_channels
+            else nn.Identity()
+        )
+        self.output_projection = nn.Linear(self.out_channels, self.output_channels)
 
     @staticmethod
     def _reshape_for_temporal_conv(
@@ -241,8 +250,9 @@ class TemporalContextEncoder(nn.Module):
             x: [B, T, N, C]
 
         Returns:
-            [B, W, N, C_out], where each position depends only on its
-            corresponding and earlier input positions.
+            [B, W, N, 2 * C_out], where each position depends only on its
+            corresponding and earlier input positions. The final linear layer
+            acts on channels independently at each node and time position.
         """
 
         if x.dim() != 4:
@@ -272,12 +282,17 @@ class TemporalContextEncoder(nn.Module):
             # produces floor(T / 2) for the current setting.
             time_len = time_len // 2
 
-        return self._reshape_back(
+        x_out = self._reshape_back(
             x_flat,
             batch_size,
             num_nodes,
             time_len,
         )
+        if x_out.shape[-1] != self.out_channels:
+            # If the input is shorter than one pooling window, no residual
+            # block runs, so perform its channel adjustment directly.
+            x_out = self.short_sequence_projection(x_out)
+        return self.output_projection(x_out)
 
 
 if __name__ == "__main__":

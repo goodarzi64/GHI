@@ -10,6 +10,9 @@ Input and output dimensionality:
   embeddings of shape [N, F_out].
 - Batched encoder: expects node features of shape [B, N, F_in] and returns
   embeddings of shape [B, N, F_out].
+
+Attention heads are averaged, so the output width is ``out_features`` regardless
+of the number of heads.
 """
 
 from typing import Optional, Tuple, Union
@@ -207,7 +210,7 @@ class SpatialGATv2EncoderBatched(nn.Module):
             in_features,
             out_features,
             heads=heads,
-            concat=True,
+            concat=False,
             negative_slope=0.2,
             dropout=dropout,
             bias=True,
