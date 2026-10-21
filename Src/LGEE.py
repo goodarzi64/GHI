@@ -69,7 +69,13 @@ class CrossAttention(nn.Module):
         self.v_proj = nn.Linear(latent_dim, latent_dim)
         self.out_proj = nn.Linear(latent_dim, latent_dim)
 
-    def forward(self, queries: torch.Tensor, keys: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        queries: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        relative_time_bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Apply single-head scaled dot-product attention.
 
         Args:
@@ -85,6 +91,14 @@ class CrossAttention(nn.Module):
         v = self.v_proj(values)   # [B*N, W, C]
 
         attn_logits = torch.matmul(q, k.transpose(-2, -1)) / (self.latent_dim ** 0.5)
+        if relative_time_bias is not None:
+            if relative_time_bias.shape != attn_logits.shape[-2:]:
+                raise ValueError(
+                    "relative_time_bias must have shape [H, W] matching attention "
+                    f"logits, got {tuple(relative_time_bias.shape)} vs "
+                    f"{tuple(attn_logits.shape[-2:])}"
+                )
+            attn_logits = attn_logits + relative_time_bias.unsqueeze(0)
         attn_weights = torch.softmax(attn_logits, dim=-1)
         context = torch.matmul(attn_weights, v)
         context = self.dropout(context)
@@ -102,9 +116,20 @@ class HorizonAwareCrossAttentionBlock(nn.Module):
         self.ffn = FeedForwardNetwork(latent_dim, hidden_dim=ff_hidden_dim, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, queries: torch.Tensor, keys: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        queries: torch.Tensor,
+        keys: torch.Tensor,
+        values: torch.Tensor,
+        relative_time_bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Perform cross-attention and feed-forward refinement."""
-        attn_out = self.attn(self.norm1(queries), self.norm1(keys), self.norm1(values))
+        attn_out = self.attn(
+            self.norm1(queries),
+            self.norm1(keys),
+            self.norm1(values),
+            relative_time_bias=relative_time_bias,
+        )
         attn_out = queries + self.dropout(attn_out)
 
         ffn_out = self.ffn(self.norm2(attn_out))
@@ -131,15 +156,24 @@ class LatentGraphEvolutionEncoder(nn.Module):
         ff_hidden_dim: int | None = None,
         num_blocks: int = 1,
         cov_dim: int | None = None,
+        history_length: int | None = None,
     ):
         super().__init__()
         self.latent_dim = latent_dim
         self.num_horizons = num_horizons
         self.dropout = dropout
         self.cov_dim = cov_dim
+        if history_length is not None and history_length <= 0:
+            raise ValueError(f"history_length must be positive, got {history_length}")
+        self.history_length = history_length
 
         self.horizon_embeddings = nn.Parameter(torch.empty(num_horizons, latent_dim))
         nn.init.normal_(self.horizon_embeddings, mean=0.0, std=0.02)
+        self.relative_time_bias = (
+            nn.Parameter(torch.zeros(num_horizons, history_length))
+            if history_length is not None
+            else None
+        )
         self.cov_projection = nn.Linear(cov_dim, latent_dim) if cov_dim is not None else None
         self.state_projection = nn.Linear(latent_dim, latent_dim)
         self.blocks = nn.ModuleList(
@@ -187,6 +221,10 @@ class LatentGraphEvolutionEncoder(nn.Module):
             [B, H, N, C]
         """
         z_flat, queries, (batch_size, num_nodes) = self._prepare_inputs(z_hist)
+        if self.relative_time_bias is not None and z_flat.shape[1] != self.history_length:
+            raise ValueError(
+                f"Expected history length W={self.history_length}, got {z_flat.shape[1]}"
+            )
         if cov_fut is not None:
             if self.cov_projection is None:
                 raise ValueError("cov_fut was provided but cov_dim is None")
@@ -207,7 +245,12 @@ class LatentGraphEvolutionEncoder(nn.Module):
         values = z_flat
 
         for block in self.blocks:
-            queries = block(queries, keys, values)
+            queries = block(
+                queries,
+                keys,
+                values,
+                relative_time_bias=self.relative_time_bias,
+            )
 
         return self._reshape_output(queries, batch_size, num_nodes)
 

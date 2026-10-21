@@ -100,6 +100,7 @@ def test_pipeline_forward_with_anchor_enabled_and_disabled():
             use_anchor=use_anchor,
             cov_dim=5,
             use_cov_queries=True,
+            history_length=1,
         )
         result = model(x_seq, graphs, cov_fut)
         assert result["forecast"].shape == (batch, horizons, nodes)
