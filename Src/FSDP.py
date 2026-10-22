@@ -288,7 +288,11 @@ class MultiGraphAdaptivePropagation(nn.Module):
         z_refined = self.refiner(z_current) if self.use_refinement and self.refiner is not None else z_current
 
         horizon_emb = self.horizon_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
-        a_phys_batch = a_phys.unsqueeze(0).expand(batch_size, -1, -1)
+        # Keep the stored/precomputed static graph intact; omit self edges only
+        # for the physical message passing performed by FSDP.
+        diagonal = torch.eye(num_nodes, device=a_phys.device, dtype=torch.bool)
+        a_phys_for_propagation = a_phys.masked_fill(diagonal, 0.0)
+        a_phys_batch = a_phys_for_propagation.unsqueeze(0).expand(batch_size, -1, -1)
 
         outputs = []
         for horizon_idx in range(self.num_horizons):
