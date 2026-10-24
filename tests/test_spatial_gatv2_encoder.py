@@ -1,8 +1,10 @@
 import sys
+from pathlib import Path
 
 import torch
 
-sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 
 from Src.MSRL import SpatialGATv2EncoderBatched
 
@@ -23,7 +25,7 @@ def test_shared_multigraph_gatv2_has_single_encoder_and_graph_specific_biases():
     assert hasattr(encoder, 'gat')
     assert hasattr(encoder, 'graph_betas')
     assert not hasattr(encoder.gat, 'beta')
-    assert encoder.gat.lin_l is encoder.gat.lin_r
+    assert encoder.gat.lin_l is not encoder.gat.lin_r
     assert encoder.graph_betas.shape == (3,)
 
     out = encoder(x_batch, [edge_index, edge_index, edge_index], [adj, adj, adj])

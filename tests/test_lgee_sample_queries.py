@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from Src.LGEE import LatentGraphEvolutionEncoder
-from Src.data_structure import TemporalFold, build_windowed_folds
+from Src.data_structure import TemporalSplit, build_windowed_dataset
 
 
 def test_lgee_shapes_and_legacy_shared_query_path():
@@ -91,16 +91,16 @@ def test_cov_future_alignment_uses_t_plus_h():
         np.arange(time_steps, dtype=np.float32)[:, None, None],
         (time_steps, nodes, features),
     )
-    fold = TemporalFold("toy", (0, time_steps), None, (0, time_steps))
+    split = TemporalSplit("toy", (0, time_steps), None, (0, time_steps))
     cov_mask = np.array([False, True, False, True, True])
-    windowed = build_windowed_folds(
+    windowed = build_windowed_dataset(
         tensor,
         {},
-        [fold],
+        split,
         T=3,
         H=2,
         cov_mask=cov_mask,
-    )[0].train
+    ).train
 
     assert windowed.cov_future.shape == (8, 2, nodes, 3)
     for h in range(2):

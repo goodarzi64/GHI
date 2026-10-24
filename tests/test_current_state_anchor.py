@@ -25,6 +25,7 @@ def _pipeline_class():
     notebook = json.loads((REPO_ROOT / "NoteBooks" / "pipeline.ipynb").read_text(encoding="utf-8"))
     cell = next(cell for cell in notebook["cells"] if "class SpatiotemporalForecastingPipeline" in "".join(cell.get("source", [])))
     namespace = {
+        "torch": torch,
         "SpatialGATv2EncoderBatched": SpatialGATv2EncoderBatched,
         "SpatialFusionModule": SpatialFusionModule,
         "TemporalContextEncoder": TemporalContextEncoder,
@@ -100,7 +101,8 @@ def test_pipeline_forward_with_anchor_enabled_and_disabled():
             use_anchor=use_anchor,
             cov_dim=5,
             use_cov_queries=True,
-            history_length=1,
+            num_blocks=2,
+            input_length=4,
         )
         result = model(x_seq, graphs, cov_fut)
         assert result["forecast"].shape == (batch, horizons, nodes)

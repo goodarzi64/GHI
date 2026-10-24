@@ -1160,11 +1160,15 @@ def build_wind_cloud_adjacency(
     """
     wind_sp = wind_sp.float()
     wind_dir = wind_dir.float()
+    if tcc is not None:
+        tcc = tcc.float()
 
     if wind_sp.dim() == 1:
         wind_sp = wind_sp.unsqueeze(0)
     if wind_dir.dim() == 1:
         wind_dir = wind_dir.unsqueeze(0)
+    if tcc is not None and tcc.dim() == 1:
+        tcc = tcc.unsqueeze(0)
 
     needs_estimation = (
         distance_scale is None
@@ -1218,9 +1222,6 @@ def build_wind_cloud_adjacency(
     print(f"Wind kernel scales: {active_scales}")
 
     if tcc is not None:
-        tcc = tcc.float()
-        if tcc.dim() == 1:
-            tcc = tcc.unsqueeze(0)
         wind_feats = torch.stack([wind_sp, wind_dir, tcc], dim=-1)
         cloud_cover_pos = 2
     else:

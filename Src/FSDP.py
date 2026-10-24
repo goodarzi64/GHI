@@ -172,7 +172,7 @@ class MultiGraphAdaptivePropagation(nn.Module):
         self.use_refinement = use_refinement
 
         self.horizon_embeddings = nn.Parameter(torch.randn(num_horizons, channels))
-        self.gate = HorizonAwarePropagationGate(channels, channels)
+        self.gate = HorizonAwarePropagationGate(channels, channels, dropout=dropout)
         self.refiner = CurrentStateRefinement(channels, hidden_dim=4 * channels, dropout=dropout) if use_refinement else None
 
         # Channel-wise normalization used only for gate generation.

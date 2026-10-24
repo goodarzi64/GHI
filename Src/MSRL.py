@@ -243,28 +243,17 @@ class SpatialGATv2EncoderBatched(nn.Module):
                 f"Expected dense adjacency [N, N] or [B, N, N], got {tuple(adjacency.shape)}."
             )
 
-        edge_indices = []
-        edge_weights = []
-        for batch_idx in range(batch_size):
-            A_b = adjacency[batch_idx]
-            edges = torch.nonzero(A_b, as_tuple=False)
-            if edges.numel() == 0:
-                continue
-            dst = edges[:, 0]
-            src = edges[:, 1]
-            weights = A_b[dst, src]
-            src = src + batch_idx * num_nodes
-            dst = dst + batch_idx * num_nodes
-            edge_indices.append(torch.stack([src, dst], dim=0))
-            edge_weights.append(weights)
-
-        if not edge_indices:
+        b, dst, src = (adjacency != 0).nonzero(as_tuple=True)
+        if b.numel() == 0:
             return (
                 torch.empty((2, 0), device=adjacency.device, dtype=torch.long),
                 torch.empty((0,), device=adjacency.device, dtype=adjacency.dtype),
             )
 
-        return torch.cat(edge_indices, dim=1), torch.cat(edge_weights, dim=0)
+        weights = adjacency[b, dst, src]
+        offset = b * num_nodes
+        edge_index = torch.stack([src + offset, dst + offset], dim=0)
+        return edge_index, weights
 
     def forward(
         self,

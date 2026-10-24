@@ -11,14 +11,14 @@ from .Graph_build import (
     WindAdjacency,
 )
 from .data_structure import (
-    TemporalFold,
-    WindowedFold,
+    TemporalSplit,
+    WindowedDataset,
     WindowedSplit,
-    build_windowed_folds,
+    build_windowed_dataset,
     build_windowed_split,
     load_graph_arrays,
-    load_windowed_drive_folds,
-    make_expanding_folds,
+    load_windowed_drive,
+    make_temporal_split,
     resolve_mask,
 )
 
@@ -33,13 +33,13 @@ __all__ = [
     "build_dtw_graphs_from_timeseries",
     "estimate_wind_kernel_scales",
     "WindAdjacency",
-    "TemporalFold",
-    "WindowedFold",
+    "TemporalSplit",
+    "WindowedDataset",
     "WindowedSplit",
-    "build_windowed_folds",
+    "build_windowed_dataset",
     "build_windowed_split",
     "load_graph_arrays",
-    "load_windowed_drive_folds",
-    "make_expanding_folds",
+    "load_windowed_drive",
+    "make_temporal_split",
     "resolve_mask",
 ]

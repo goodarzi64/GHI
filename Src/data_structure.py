@@ -12,7 +12,7 @@ MaskLike = Optional[str | Sequence[bool] | Sequence[int] | np.ndarray]
 
 
 @dataclass(frozen=True)
-class TemporalFold:
+class TemporalSplit:
     """
     One temporal train/validation/test split.
 
@@ -44,45 +44,38 @@ class WindowedSplit:
     historical_graphs: Dict[str, np.ndarray]
     future_graphs: Dict[str, np.ndarray]
     cov_future: Optional[np.ndarray] = None
+    y_raw: Optional[np.ndarray] = None
 
 
 @dataclass(frozen=True)
-class WindowedFold:
-    """Train/validation/test windowed data for one fold."""
+class WindowedDataset:
+    """Windowed train/validation/test data for one chronological split."""
 
     name: str
     train: WindowedSplit
     val: Optional[WindowedSplit]
     test: WindowedSplit
-    slices: TemporalFold
+    slices: TemporalSplit
 
 
-def make_expanding_folds(
+def make_temporal_split(
     n_timesteps: int,
     *,
     val_duration: int,
     test_duration: int,
-    fold_count: int = 1,
-) -> List[TemporalFold]:
+) -> TemporalSplit:
     """
-    Build expanding validation folds with a fixed final test period.
+    Build one chronological train/validation/test split.
 
     Args:
         n_timesteps: Total temporal length ``T``.
-        val_duration: Required validation length per fold. If ``0``, no
-            validation folds are created and one train/test split is returned.
+        val_duration: Validation length. If ``0``, validation is omitted.
         test_duration: Required final test length.
-        fold_count: Number of expanding validation folds.
-
-    The initial training duration is inferred from the timesteps left after
-    reserving the final test period and all validation folds.
 
     Returns:
-        A list of ``TemporalFold`` objects. Test is always the last
-        ``test_duration`` timesteps.
+        The test split is always the last ``test_duration`` timesteps.
     """
     _validate_positive("n_timesteps", n_timesteps)
-    _validate_positive("fold_count", fold_count)
     _validate_positive("test_duration", test_duration)
 
     if test_duration >= n_timesteps:
@@ -95,40 +88,27 @@ def make_expanding_folds(
         raise ValueError("val_duration cannot be negative.")
     if val_duration == 0:
         _validate_split_lengths(available, 0, test_duration, n_timesteps)
-        return [
-            TemporalFold(
-                name="train_test",
-                train_slice=(0, available),
-                val_slice=None,
-                test_slice=test_slice,
-            )
-        ]
-
-    required_val = val_duration * fold_count
-    train_duration = available - required_val
-    _validate_split_lengths(train_duration, required_val, test_duration, n_timesteps)
-
-    folds: List[TemporalFold] = []
-    for fold_idx in range(fold_count):
-        train_end = train_duration + fold_idx * val_duration
-        val_start = train_end
-        val_end = val_start + val_duration
-        folds.append(
-            TemporalFold(
-                name=f"fold_{fold_idx + 1}",
-                train_slice=(0, train_end),
-                val_slice=(val_start, val_end),
-                test_slice=test_slice,
-            )
+        return TemporalSplit(
+            name="train_test",
+            train_slice=(0, available),
+            val_slice=None,
+            test_slice=test_slice,
         )
 
-    return folds
+    train_duration = available - val_duration
+    _validate_split_lengths(train_duration, val_duration, test_duration, n_timesteps)
+    return TemporalSplit(
+        name="train_validation_test",
+        train_slice=(0, train_duration),
+        val_slice=(train_duration, available),
+        test_slice=test_slice,
+    )
 
 
-def build_windowed_folds(
+def build_windowed_dataset(
     tensor: np.ndarray,
     graphs: Mapping[str, np.ndarray],
-    folds: Sequence[TemporalFold],
+    split: TemporalSplit,
     *,
     T: int,
     H: int,
@@ -137,14 +117,15 @@ def build_windowed_folds(
     output_mask: MaskLike = None,
     cov_mask: MaskLike = None,
     target_tensor: Optional[np.ndarray] = None,
-) -> List[WindowedFold]:
+    raw_target_tensor: Optional[np.ndarray] = None,
+) -> WindowedDataset:
     """
-    Convert temporal data and graph arrays into in-memory windowed folds.
+    Convert temporal data and graph arrays into one windowed dataset.
 
     Args:
         tensor: Node features shaped [T, N, F].
         graphs: Graph arrays shaped [N, N] or [T, N, N].
-        folds: Split definitions from ``make_expanding_folds``.
+        split: Split definition from ``make_temporal_split``.
         T: Historical input window length.
         H: Future horizon length.
         stride: Sliding window stride.
@@ -154,6 +135,8 @@ def build_windowed_folds(
         cov_mask: Optional boolean feature mask or ordered feature indices for
             deterministic future covariates.
         target_tensor: Optional target array shaped [T, N] or [T, N, F_out].
+        raw_target_tensor: Optional raw-unit target array with the same time and
+            node dimensions, windowed into ``y_raw`` for evaluation.
     """
     _validate_temporal_tensor(tensor, "tensor")
     _validate_positive("T", T)
@@ -166,58 +149,56 @@ def build_windowed_folds(
         y_source = _select_features(tensor, output_mask)
     else:
         y_source = _ensure_target_rank(target_tensor)
+    raw_y_source = (
+        _ensure_target_rank(raw_target_tensor)
+        if raw_target_tensor is not None
+        else None
+    )
 
     if y_source.shape[:2] != tensor.shape[:2]:
         raise ValueError("target_tensor must share [T, N] with tensor.")
+    if raw_y_source is not None and raw_y_source.shape[:2] != tensor.shape[:2]:
+        raise ValueError("raw_target_tensor must share [T, N] with tensor.")
 
     selected_graphs = _validate_graphs(graphs, tensor.shape[0], tensor.shape[1])
-    windowed: List[WindowedFold] = []
-    for fold in folds:
-        train = build_windowed_split(
+    train = build_windowed_split(
+        x_source,
+        y_source,
+        selected_graphs,
+        split.train_slice,
+        T=T,
+        H=H,
+        stride=stride,
+        cov_source=cov_source,
+        raw_y_source=raw_y_source,
+    )
+    val = (
+        build_windowed_split(
             x_source,
             y_source,
             selected_graphs,
-            fold.train_slice,
+            split.val_slice,
             T=T,
             H=H,
             stride=stride,
             cov_source=cov_source,
+            raw_y_source=raw_y_source,
         )
-        val = (
-            build_windowed_split(
-                x_source,
-                y_source,
-                selected_graphs,
-                fold.val_slice,
-                T=T,
-                H=H,
-                stride=stride,
-                cov_source=cov_source,
-            )
-            if fold.val_slice is not None
-            else None
-        )
-        test = build_windowed_split(
-            x_source,
-            y_source,
-            selected_graphs,
-            fold.test_slice,
-            T=T,
-            H=H,
-            stride=stride,
-            cov_source=cov_source,
-        )
-        windowed.append(
-            WindowedFold(
-                name=fold.name,
-                train=train,
-                val=val,
-                test=test,
-                slices=fold,
-            )
-        )
-
-    return windowed
+        if split.val_slice is not None
+        else None
+    )
+    test = build_windowed_split(
+        x_source,
+        y_source,
+        selected_graphs,
+        split.test_slice,
+        T=T,
+        H=H,
+        stride=stride,
+        cov_source=cov_source,
+        raw_y_source=raw_y_source,
+    )
+    return WindowedDataset(name=split.name, train=train, val=val, test=test, slices=split)
 
 
 def build_windowed_split(
@@ -230,6 +211,7 @@ def build_windowed_split(
     H: int,
     stride: int = 1,
     cov_source: Optional[np.ndarray] = None,
+    raw_y_source: Optional[np.ndarray] = None,
 ) -> WindowedSplit:
     """Build one split with ``x``, ``y``, historical graphs, and future graphs."""
     start, end = time_slice
@@ -250,6 +232,13 @@ def build_windowed_split(
         if cov_source is not None
         else None
     )
+    y_raw = (
+        _window_series(raw_y_source, starts, H, offset=T)
+        if raw_y_source is not None
+        else None
+    )
+    if y_raw is not None and y_raw.shape[-1] == 1:
+        y_raw = y_raw[..., 0]
 
     historical_graphs: Dict[str, np.ndarray] = {}
     future_graphs: Dict[str, np.ndarray] = {}
@@ -263,10 +252,11 @@ def build_windowed_split(
         historical_graphs=historical_graphs,
         future_graphs=future_graphs,
         cov_future=cov_future,
+        y_raw=y_raw,
     )
 
 
-def load_windowed_drive_folds(
+def load_windowed_drive(
     base_dir: str,
     *,
     T: int,
@@ -274,11 +264,11 @@ def load_windowed_drive_folds(
     val_duration: int,
     test_duration: int,
     stride: int = 1,
-    fold_count: int = 1,
     tensor_filename: str = "filtered_tensor.npz",
     tensor_array_key: str,
     input_mask_key: Optional[str] = "mask_forecast",
     output_mask_key: Optional[str] = None,
+    raw_output_mask: MaskLike = None,
     cov_mask: MaskLike = None,
     graph_dirname: str = "precomputed_graphs",
     graph_filenames: Sequence[str] = (
@@ -288,10 +278,10 @@ def load_windowed_drive_folds(
     ),
     graph_array_keys: Mapping[str, str | Sequence[str]],
     allow_pickle: bool = True,
-) -> List[WindowedFold]:
+) -> WindowedDataset:
     """
     Load ``filtered_tensor.npz`` and selected graph files, then return
-    in-memory windowed folds. ``tensor_array_key`` and an explicit key for
+    one in-memory windowed dataset. ``tensor_array_key`` and an explicit key for
     each existing graph artifact must be provided.
 
     ``graph_array_keys`` maps each graph artifact to its array key. Mapping
@@ -310,6 +300,7 @@ def load_windowed_drive_folds(
 
     input_mask = resolve_mask(tensor_arrays, input_mask_key)
     output_mask = resolve_mask(tensor_arrays, output_mask_key)
+    raw_target_mask = resolve_mask(tensor_arrays, raw_output_mask)
     cov_mask_resolved = resolve_mask(tensor_arrays, cov_mask)
     graphs = load_graph_arrays(
         os.path.join(base_dir, graph_dirname),
@@ -318,21 +309,25 @@ def load_windowed_drive_folds(
         allow_pickle=allow_pickle,
     )
 
-    folds = make_expanding_folds(
+    split = make_temporal_split(
         tensor.shape[0],
         val_duration=val_duration,
         test_duration=test_duration,
-        fold_count=fold_count,
     )
-    return build_windowed_folds(
+    return build_windowed_dataset(
         tensor,
         graphs,
-        folds,
+        split,
         T=T,
         H=H,
         stride=stride,
         input_mask=input_mask,
         output_mask=output_mask,
+        raw_target_tensor=(
+            _select_features(tensor, raw_target_mask)
+            if raw_target_mask is not None
+            else None
+        ),
         cov_mask=cov_mask_resolved,
     )
 

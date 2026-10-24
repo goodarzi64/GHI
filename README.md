@@ -6,7 +6,7 @@ forecast horizons, and predicting future spatial graphs and GHI.
 
 ## Repository layout
 
-- `Src/data_structure.py`: temporal train/validation/test folds, sliding windows,
+- `Src/data_structure.py`: chronological train/validation/test split, sliding windows,
   masks, and loading tensor and graph arrays from `.npz` files.
 - `Src/Graph_build.py`: geographic, DTW, and wind based graph construction.
 - `Src/MSRL.py` and `Src/fusion_module.py`: shared GATv2 spatial encoding with
@@ -30,7 +30,7 @@ version using the [PyG installation instructions](https://pytorch-geometric.read
 
 ## Load windowed data
 
-`load_windowed_drive_folds` expects a directory containing
+`load_windowed_drive` expects a directory containing
 `filtered_tensor.npz` and a `precomputed_graphs` directory. It requires explicit
 array keys for the tensor and each graph artifact that exists. The defaults
 look for `static_graph.npz`, `wind_cloud_graphs.npz`, and `dtw_graphs.npz`;
@@ -38,16 +38,15 @@ missing graph files are skipped. Each graph array may be static `[N, N]` or
 time-varying `[T, N, N]`.
 
 ```python
-from Src.data_structure import load_windowed_drive_folds
+from Src.data_structure import load_windowed_drive
 
-folds = load_windowed_drive_folds(
+dataset = load_windowed_drive(
     "/path/to/filtered_data",
     T=12,                         # history length
     H=3,                          # forecast horizon
     stride=1,
     val_duration=365,
     test_duration=365,
-    fold_count=3,
     tensor_array_key="tensor",
     input_mask_key="mask_forecast",
     output_mask_key="mask_forecast",
@@ -58,14 +57,13 @@ folds = load_windowed_drive_folds(
     },
 )
 
-fold = folds[0]
-print(fold.train.x.shape)  # [B, T, N, F_in]
-print(fold.train.y.shape)  # [B, H, N, F_out]
-print(fold.train.historical_graphs.keys())
+print(dataset.train.x.shape)  # [B, T, N, F_in]
+print(dataset.train.y.shape)  # [B, H, N, F_out]
+print(dataset.train.historical_graphs.keys())
 ```
 
 Set `val_duration=0` to produce one train/test split; in that case
-`fold.val` is `None`. A fold's graph mappings contain `[N, N]` arrays for static
+`dataset.val` is `None`. Graph mappings contain `[N, N]` arrays for static
 graphs and `[B, T, N, N]` / `[B, H, N, N]` windows for time-varying historical
 and future graphs.
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
-from Src.data_structure import load_windowed_drive_folds
+from Src.data_structure import load_windowed_drive
 
 root = Path(tempfile.mkdtemp())
 (root / 'precomputed_graphs').mkdir(parents=True, exist_ok=True)
@@ -17,19 +17,17 @@ np.savez(
 adj = np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float32)
 np.savez(root / 'precomputed_graphs' / 'static_graph.npz', static_graph=adj)
 
-folds = load_windowed_drive_folds(
+dataset = load_windowed_drive(
     str(root),
     T=3,
     H=1,
     stride=1,
     val_duration=0,
     test_duration=3,
-    fold_count=1,
     tensor_array_key='tensor',
     input_mask_key='mask_forecast',
     output_mask_key='mask_forecast',
     graph_array_keys={'static_graph': 'static_graph'},
 )
-print('fold_count', len(folds))
-print('train_x_shape', folds[0].train.x.shape)
-print('graph_keys', list(folds[0].train.historical_graphs.keys()))
+print('train_x_shape', dataset.train.x.shape)
+print('graph_keys', list(dataset.train.historical_graphs.keys()))
