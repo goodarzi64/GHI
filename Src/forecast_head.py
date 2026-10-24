@@ -16,22 +16,15 @@ class ForecastHead(nn.Module):
         hidden_dim: int | None = None,
         dropout: float = 0.1,
         num_horizons: int | None = None,
-        horizon_emb_dim: int | None = None,
     ):
         super().__init__()
         hidden_dim = 2 * channels if hidden_dim is None else hidden_dim
         self.num_horizons = num_horizons
-        self.horizon_emb_dim = horizon_emb_dim or 0
         self.norm = nn.LayerNorm(channels)
         self.proj_in = nn.Linear(channels, hidden_dim)
         self.act = nn.GELU()
         self.drop = nn.Dropout(dropout)
         self.proj_out = nn.Linear(hidden_dim, 1)
-
-        if num_horizons is not None and num_horizons > 0:
-            self.horizon_embeddings = nn.Parameter(torch.randn(num_horizons, channels))
-        else:
-            self.horizon_embeddings = None
 
     def forward(self, h_final: torch.Tensor, horizon_idx: torch.Tensor | None = None) -> torch.Tensor:
         """Map state(s) to [B, H, N]. Accepts either [B, H, N, C] or [B, N, C]."""
@@ -72,7 +65,7 @@ class ForecastAndGraphLoss(nn.Module):
         self,
         forecast_weight: float = 1.0,
         graph_weight: float = 0.5,
-        sparsity_weight: float = 0.0,
+        sparsity_weight: float = 0.2,
         delta: float = 1.0,
     ):
         super().__init__()

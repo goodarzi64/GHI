@@ -25,7 +25,7 @@ def test_horizon_aware_multi_graph_appnp_shapes():
 
 def test_forecast_head_and_loss():
     torch.manual_seed(0)
-    head = ForecastHead(channels=8, num_horizons=3, horizon_emb_dim=4)
+    head = ForecastHead(channels=8, num_horizons=3)
     state = torch.randn(2, 5, 8)
     preds = head(state, horizon_idx=torch.tensor([0, 1]))
 
