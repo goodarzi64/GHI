@@ -15,6 +15,8 @@ class FutureSpatialDependencyGenerator(nn.Module):
     The generator scores every node pair and applies a residual update to the dense current
     adjacency without edge pruning. Directed rows represent receivers (A_in[dst, src]).
     Future graphs are returned as dense tensors for regularization and propagation.
+    With zero output initialization, the initial output is the clipped current graph with its
+    diagonal zeroed; the semantic graph is symmetrized.
     """
 
     def __init__(
@@ -22,6 +24,7 @@ class FutureSpatialDependencyGenerator(nn.Module):
         latent_dim: int,
         hidden_dim: int | None = None,
         residual_scale: float = 0.1,
+        zero_init_output: bool = True,
     ):
         """Initialize the dense graph predictor for wind and semantic dependencies.
 
@@ -47,6 +50,10 @@ class FutureSpatialDependencyGenerator(nn.Module):
             nn.Dropout(0.0),
             nn.Linear(hidden_dim, 1),
         )
+        if zero_init_output:
+            for mlp in (self.wind_mlp, self.sem_mlp):
+                nn.init.zeros_(mlp[-1].weight)
+                nn.init.zeros_(mlp[-1].bias)
 
     def _rowwise_residual_update(
         self,
