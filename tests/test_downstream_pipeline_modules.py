@@ -1,8 +1,10 @@
 import sys
+from pathlib import Path
 
 import torch
 
-sys.path.insert(0, 'c:/Users/Mohsen/Documents/GHI')
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 
 from Src.forecast_head import ForecastHead
 from Src.Graph_build import (

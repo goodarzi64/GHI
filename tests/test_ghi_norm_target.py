@@ -11,7 +11,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from Src.forecast_head import ForecastAndGraphLoss, ForecastHead
 from Src.forecast_metrics import ghi_metrics_wm2, invert_ghi_normalization
-from Src.data_structure import TemporalSplit, build_windowed_dataset
+from Src.data_structure import TemporalSplit, build_windowed_dataset, make_temporal_split
 
 
 def test_inversion_round_trip_and_nonnegative_predictions():
@@ -69,7 +69,28 @@ def test_raw_target_windows_align_with_normalized_targets():
     assert np.all(dataset.test.y_raw == 1100.0)
 
 
+def test_chronological_split_gives_18_months_train_and_6_months_validation():
+    # Use ten synthetic timesteps per month; production durations are timestep counts.
+    steps_per_month = 10
+    train_steps = 18 * steps_per_month
+    validation_steps = 6 * steps_per_month
+    test_steps = 3 * steps_per_month
+    split = make_temporal_split(
+        train_steps + validation_steps + test_steps,
+        val_duration=validation_steps,
+        test_duration=test_steps,
+    )
+
+    assert split.train_slice == (0, train_steps)
+    assert split.val_slice == (train_steps, train_steps + validation_steps)
+    assert split.test_slice == (
+        train_steps + validation_steps,
+        train_steps + validation_steps + test_steps,
+    )
+
+
 if __name__ == "__main__":
     test_inversion_round_trip_and_nonnegative_predictions()
     test_metrics_are_reported_in_watts_per_square_meter()
     test_normalized_target_forecast_and_loss_are_finite()
+    test_chronological_split_gives_18_months_train_and_6_months_validation()

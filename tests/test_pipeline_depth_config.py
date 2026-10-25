@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_current_state_anchor import _pipeline_class
 
 
-GRAPH_NAMES = ["static_graph:A_topk", "wind_cloud_graphs:A_topk", "dtw_graphs:A_dtw"]
+GRAPH_NAMES = ["static_graph:A_topk", "wind_cloud_graphs:A_topk", "dtw_graphs:A_topk"]
 
 
 def _pipeline_kwargs(pipeline_cls, **overrides):
@@ -101,9 +101,22 @@ def test_forward_reports_mismatched_runtime_history_length():
         model(x_seq, graphs, cov_future)
 
 
+def test_pipeline_uses_topk_dtw_for_msrl_and_dense_dtw_for_anchor():
+    notebook = json.loads((REPO_ROOT / "NoteBooks" / "pipeline.ipynb").read_text(encoding="utf-8"))
+    source = "\n".join(
+        "".join(cell.get("source", []))
+        for cell in notebook["cells"]
+        if cell.get("cell_type") == "code"
+    )
+
+    assert "'dtw_graphs:A_topk']" in source
+    assert 'historical_graphs["dtw_graphs:A_dtw"]' in source
+
+
 if __name__ == "__main__":
     test_pipeline_forward_supports_multiple_depths_and_matching_history()
     test_constructor_rejects_nondivisible_length_and_short_dilation_list()
     test_default_depth_derives_history_and_default_setup_is_preserved()
     test_forward_reports_mismatched_runtime_history_length()
+    test_pipeline_uses_topk_dtw_for_msrl_and_dense_dtw_for_anchor()
     print("pipeline depth configuration tests passed")
