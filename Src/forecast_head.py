@@ -67,19 +67,24 @@ class ForecastAndGraphLoss(nn.Module):
         graph_weight: float = 0.5,
         sparsity_weight: float = 0.2,
         delta: float = 1.0,
+        graph_delta: float | None = None,
     ):
         super().__init__()
         self.forecast_weight = forecast_weight
         self.graph_weight = graph_weight
         self.sparsity_weight = sparsity_weight
         self.delta = delta
+        self.graph_delta = graph_delta
 
-    def _huber_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def _huber_loss(
+        self, pred: torch.Tensor, target: torch.Tensor, delta: float | None = None
+    ) -> torch.Tensor:
+        delta = self.delta if delta is None else delta
         diff = pred - target
         abs_diff = diff.abs()
         quad = 0.5 * diff.pow(2)
-        lin = self.delta * (abs_diff - 0.5 * self.delta)
-        return torch.where(abs_diff <= self.delta, quad, lin).mean()
+        lin = delta * (abs_diff - 0.5 * delta)
+        return torch.where(abs_diff <= delta, quad, lin).mean()
 
     def _graph_reconstruction_loss(self, pred_graph: torch.Tensor, target_graph: torch.Tensor) -> torch.Tensor:
         if pred_graph.dim() != target_graph.dim():
@@ -96,7 +101,11 @@ class ForecastAndGraphLoss(nn.Module):
         if num_nodes < 2:
             return pred_graph.sum() * 0.0
         off_diagonal = ~torch.eye(num_nodes, dtype=torch.bool, device=pred_graph.device)
-        return self._huber_loss(pred_graph[..., off_diagonal], target_graph[..., off_diagonal])
+        return self._huber_loss(
+            pred_graph[..., off_diagonal],
+            target_graph[..., off_diagonal],
+            delta=self.graph_delta,
+        )
 
     def _sparsity_penalty(self, graph: torch.Tensor) -> torch.Tensor:
         if graph.shape[-1] != graph.shape[-2]:
