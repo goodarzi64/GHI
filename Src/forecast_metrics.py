@@ -34,21 +34,22 @@ def ghi_metrics_wm2(
     target_raw: np.ndarray,
     mu: float,
     sigma: float,
-    daytime_mask: np.ndarray,
+    daytime_mask: np.ndarray | None = None,
 ) -> dict[str, dict[str, float]]:
-    """Compute all hour and daytime RMSE, MAE, and R² in W/m².
+    """Compute all-hour metrics and optionally daytime metrics in W/m².
 
-    Inputs have shape ``[B,H,N]``; ``daytime_mask`` is broadcastable to it.
+    Inputs have shape ``[B,H,N]``. If provided, ``daytime_mask`` is broadcastable
+    to the input shape and adds a separate daytime result.
     """
     prediction = np.asarray(invert_ghi_normalization(prediction_norm, mu, sigma))
     target = np.asarray(target_raw)
     if prediction.shape != target.shape:
         raise ValueError(f"Prediction and raw target shapes differ: {prediction.shape} vs {target.shape}.")
-    day = np.broadcast_to(np.asarray(daytime_mask, dtype=bool), target.shape)
-    return {
-        "all_hours": _regression_metrics(prediction, target),
-        "daytime": _regression_metrics(prediction[day], target[day]),
-    }
+    metrics = {"all_hours": _regression_metrics(prediction, target)}
+    if daytime_mask is not None:
+        day = np.broadcast_to(np.asarray(daytime_mask, dtype=bool), target.shape)
+        metrics["daytime"] = _regression_metrics(prediction[day], target[day])
+    return metrics
 
 
 def ghi_metrics_by_horizon_wm2(
@@ -56,14 +57,19 @@ def ghi_metrics_by_horizon_wm2(
     target_raw: np.ndarray,
     mu: float,
     sigma: float,
-    daytime_mask: np.ndarray,
+    daytime_mask: np.ndarray | None = None,
 ) -> list[dict[str, dict[str, float]]]:
-    """Compute overall and daytime metrics separately for each horizon."""
+    """Compute all-hour metrics by horizon, optionally including daytime metrics."""
     prediction = np.asarray(prediction_norm)
     target = np.asarray(target_raw)
-    day = np.broadcast_to(np.asarray(daytime_mask, dtype=bool), target.shape)
+    day = (
+        np.broadcast_to(np.asarray(daytime_mask, dtype=bool), target.shape)
+        if daytime_mask is not None
+        else None
+    )
     return [
         ghi_metrics_wm2(prediction[:, horizon:horizon + 1], target[:, horizon:horizon + 1],
-                        mu, sigma, day[:, horizon:horizon + 1])
+                        mu, sigma,
+                        day[:, horizon:horizon + 1] if day is not None else None)
         for horizon in range(prediction.shape[1])
     ]
