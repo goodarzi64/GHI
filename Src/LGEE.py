@@ -34,23 +34,6 @@ import torch
 import torch.nn as nn
 
 
-class FeedForwardNetwork(nn.Module):
-    """Two-layer feed-forward network used in each transformer block."""
-
-    def __init__(self, latent_dim: int, hidden_dim: int | None = None, dropout: float = 0.1):
-        super().__init__()
-        hidden_dim = latent_dim * 2 if hidden_dim is None else hidden_dim
-        self.net = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, latent_dim),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
 class CrossAttention(nn.Module):
     """Single-head scaled dot-product cross-attention over the temporal dimension.
 
@@ -106,14 +89,16 @@ class CrossAttention(nn.Module):
 
 
 class HorizonAwareCrossAttentionBlock(nn.Module):
-    """A single transformer-style cross-attention block using single-head attention."""
+    """Single-head cross-attention with an output projection and residual.
+
+    ``ff_hidden_dim`` is accepted for constructor compatibility but unused:
+    this block has no feed-forward stage.
+    """
 
     def __init__(self, latent_dim: int, dropout: float = 0.1, ff_hidden_dim: int | None = None):
         super().__init__()
         self.norm1 = nn.LayerNorm(latent_dim)
-        self.norm2 = nn.LayerNorm(latent_dim)
         self.attn = CrossAttention(latent_dim, dropout=dropout)
-        self.ffn = FeedForwardNetwork(latent_dim, hidden_dim=ff_hidden_dim, dropout=dropout)
         self.dropout = nn.Dropout(dropout)
 
     def forward(
@@ -123,17 +108,14 @@ class HorizonAwareCrossAttentionBlock(nn.Module):
         values: torch.Tensor,
         relative_time_bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Perform cross-attention and feed-forward refinement."""
+        """Return the query plus its projected attention context."""
         attn_out = self.attn(
             self.norm1(queries),
             self.norm1(keys),
             self.norm1(values),
             relative_time_bias=relative_time_bias,
         )
-        attn_out = queries + self.dropout(attn_out)
-
-        ffn_out = self.ffn(self.norm2(attn_out))
-        return attn_out + self.dropout(ffn_out)
+        return queries + self.dropout(attn_out)
 
 
 class LatentGraphEvolutionEncoder(nn.Module):

@@ -31,17 +31,17 @@ class CurrentStateRefinement(nn.Module):
 
 
 class HorizonAwarePropagationGate(nn.Module):
-    """Learn node-wise, feature-wise gates for fusing multi-graph messages."""
+    """Learn three graph-wise scalar gates per node and horizon."""
 
     def __init__(self, channels: int, horizon_dim: int, dropout: float = 0.1):
         super().__init__()
         self.channels = channels
         self.horizon_dim = horizon_dim
         self.net = nn.Sequential(
-            nn.Linear(4 * channels + horizon_dim, 2 * channels),
+            nn.Linear(4 * channels + horizon_dim, 16),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(2 * channels, 3 * channels),
+            nn.Linear(16, 3),
             nn.Sigmoid(),
         )
 
@@ -53,7 +53,7 @@ class HorizonAwarePropagationGate(nn.Module):
         m_sem: torch.Tensor,
         horizon_emb: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return gates [g_phys, g_wind, g_sem] with shape [B, N, C]."""
+        """Return gates [g_phys, g_wind, g_sem], each shaped [B, N, 1]."""
         if h.dim() != 3:
             raise ValueError(f"Expected hidden state [B, N, C], got {tuple(h.shape)}")
 
@@ -149,7 +149,7 @@ class MultiGraphAdaptivePropagation(nn.Module):
         propagation_steps: int = 3,
         alpha: float = 0.1,
         dropout: float = 0.1,
-        use_refinement: bool = True,
+        use_refinement: bool = False,
     ):
         super().__init__()
 
@@ -175,10 +175,9 @@ class MultiGraphAdaptivePropagation(nn.Module):
         self.gate = HorizonAwarePropagationGate(channels, channels, dropout=dropout)
         self.refiner = CurrentStateRefinement(channels, hidden_dim=4 * channels, dropout=dropout) if use_refinement else None
 
-        # Channel-wise normalization used only for gate generation.
-        self.message_norm_phys = nn.LayerNorm(channels)
-        self.message_norm_wind = nn.LayerNorm(channels)
-        self.message_norm_sem = nn.LayerNorm(channels)
+        # Share affine parameters across graph types; normalize each message
+        # independently across channels, only for gate generation.
+        self.message_norm = nn.LayerNorm(channels)
 
     def forward(
         self,
@@ -308,9 +307,9 @@ class MultiGraphAdaptivePropagation(nn.Module):
                 m_wind = torch.einsum('bij,bjc->bic', a_wind_h, h)
                 m_sem = torch.einsum('bij,bjc->bic', a_sem_h, h)
 
-                m_phys_gate = self.message_norm_phys(m_phys)
-                m_wind_gate = self.message_norm_wind(m_wind)
-                m_sem_gate = self.message_norm_sem(m_sem)
+                m_phys_gate = self.message_norm(m_phys)
+                m_wind_gate = self.message_norm(m_wind)
+                m_sem_gate = self.message_norm(m_sem)
 
                 g_phys, g_wind, g_sem = self.gate(
                     h,
