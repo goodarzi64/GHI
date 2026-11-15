@@ -1,4 +1,4 @@
-# GHI Spatial Encoder & Fusion Module
+# MGLE-NET Spatial Encoder & Fusion Module
 
 Multi-graph spatial encoder using **GATv2** (Graph Attention Networks v2) with learnable edge bias, combined with a **fusion module** to merge outputs from three graph types (static, dynamic, wind).
 

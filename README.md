@@ -1,8 +1,17 @@
-# GHI forecasting
+# MGLE-NET: GHI forecasting
 
 Utilities and PyTorch modules for preparing windowed global horizontal irradiance
 (GHI) data, encoding spatial and temporal features, evolving latent states across
 forecast horizons, and predicting future spatial graphs and GHI.
+
+MGLE-NET uses an encoder (MSRL, multi-graph fusion, and MTRL) followed by a
+decoder (LGEC, FSDG, FSDP, and the forecast head). LGEC (Latent Graph Evolution
+Conditioning) serves as the decoder's horizon-conditioning
+stage through cross-attention over the encoded history.
+
+The main implementation is `SpatiotemporalForecastingPipeline` in
+`NoteBooks/pipeline.ipynb`. Its current configuration uses 336 historical steps
+and 12 forecast horizons.
 
 ## Repository layout
 
@@ -18,7 +27,7 @@ forecast horizons, and predicting future spatial graphs and GHI.
   returns `[B, W, N, 2*C_out]`, downsampling the temporal axis by two in each
   block while enough time steps remain, then applying a per-position channel
   projection from `C_out` to `2*C_out`.
-- `Src/LGEE.py`: horizon-aware latent context generation, mapping
+- `Src/LGEC.py`: horizon-aware latent context generation, mapping
   `[B, W, N, C]` to `[B, H, N, C]`.
 - `Src/FSDG.py` and `Src/FSDP.py`: future spatial dependency generation and
   multi-graph propagation.
@@ -105,7 +114,7 @@ The temporal encoder processes each node independently. Its convolutions are
 causal, and each block halves the temporal length with average pooling. The
 final linear projection doubles the channel width independently for each node
 and remaining time position. Configure downstream latent modules with
-`2 * out_channels`; the pipeline notebook uses this width for LGEE, future graph
+`2 * out_channels`; the pipeline notebook uses this width for LGEC, future graph
 generation, graph propagation, and the forecast head.
 
 In `SpatiotemporalForecastingPipeline`, `input_length` determines the expected MTRL

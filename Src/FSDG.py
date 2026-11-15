@@ -1,7 +1,7 @@
 """Utilities for generating future spatial dependency graphs (FSDG).
 
 This module applies the forecast graph generation path used by the pipeline:
-Z_LGEE [B, W, N, C] -> horizon-aware latent states [B, H, N, C] -> FSDG ->
+Z_LGEC [B, W, N, C] -> horizon-aware latent states [B, H, N, C] -> FSDG ->
 Future Graphs -> FSDP.
 """
 

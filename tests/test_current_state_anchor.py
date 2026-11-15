@@ -15,7 +15,7 @@ def _pipeline_class():
 
     pytest.importorskip("torch_geometric")
     from Src.FSDG import FutureSpatialDependencyGenerator
-    from Src.LGEE import LatentGraphEvolutionEncoder
+    from Src.LGEC import LatentGraphEvolutionConditioning
     from Src.MSRL import SpatialGATv2EncoderBatched
     from Src.MTRL import TemporalContextEncoder
     from Src.fusion_module import SpatialFusionModule
@@ -29,7 +29,7 @@ def _pipeline_class():
         "SpatialGATv2EncoderBatched": SpatialGATv2EncoderBatched,
         "SpatialFusionModule": SpatialFusionModule,
         "TemporalContextEncoder": TemporalContextEncoder,
-        "LatentGraphEvolutionEncoder": LatentGraphEvolutionEncoder,
+        "LatentGraphEvolutionConditioning": LatentGraphEvolutionConditioning,
         "FutureSpatialDependencyGenerator": FutureSpatialDependencyGenerator,
         "MultiGraphAdaptivePropagation": MultiGraphAdaptivePropagation,
         "CurrentStateAnchor": CurrentStateAnchor,

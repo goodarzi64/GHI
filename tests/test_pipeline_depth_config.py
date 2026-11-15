@@ -1,4 +1,4 @@
-"""Plain-script checks for configurable temporal depth and LGEE history."""
+"""Plain-script checks for configurable temporal depth and LGEC history."""
 
 import sys
 from pathlib import Path
@@ -64,7 +64,7 @@ def test_pipeline_forward_supports_multiple_depths_and_matching_history():
         assert model.history_length == expected_history
         assert model.num_blocks == num_blocks
         assert model.dilation_list == [2**i for i in range(num_blocks)]
-        assert model.latent_evolution_encoder.history_length == expected_history
+        assert model.latent_graph_evolution_conditioner.history_length == expected_history
         assert result["forecast"].shape == (1, 2, 3)
         assert torch.isfinite(result["forecast"]).all()
 

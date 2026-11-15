@@ -1,6 +1,7 @@
-﻿"""Latent Graph Evolution Encoder (LGEE).
+"""Latent Graph Evolution Conditioning (LGEC).
 
-This module converts a compressed historical latent trajectory into horizon-specific
+This module forms the horizon-conditioning stage of the MGLE-NET decoder.
+It converts a compressed historical latent trajectory into horizon-specific
 latent graph evolution contexts. It is intentionally not a forecasting head and
 does not predict node values, adjacency matrices, or graph features.
 
@@ -8,6 +9,9 @@ The module performs node-wise cross-attention between learnable horizon queries
 and historical latent states along the temporal dimension. Each forecasting
 horizon learns which historical latent tokens are most informative for its own
 context.
+
+The output is the horizon query plus the projected attention context, with
+training dropout. There is no feed-forward refinement stage.
 
 Input
 -----
@@ -118,10 +122,10 @@ class HorizonAwareCrossAttentionBlock(nn.Module):
         return queries + self.dropout(attn_out)
 
 
-class LatentGraphEvolutionEncoder(nn.Module):
-    """Learn horizon-conditioned latent graph evolution contexts.
+class LatentGraphEvolutionConditioning(nn.Module):
+    """Generate horizon-conditioned latent graph contexts.
 
-    The encoder takes a compressed historical latent trajectory [B, W, N, C] and
+    The module takes a compressed historical latent trajectory [B, W, N, C] and
     produces a horizon-specific latent graph representation [B, H, N, C]. Each
     forecasting horizon has its own learnable query embedding, enabling the model
     to attend to different parts of the historical trajectory.
@@ -239,6 +243,6 @@ class LatentGraphEvolutionEncoder(nn.Module):
 
 if __name__ == '__main__':
     x = torch.randn(2, 16, 4, 8)
-    encoder = LatentGraphEvolutionEncoder(latent_dim=8, num_horizons=3, dropout=0.1)
+    encoder = LatentGraphEvolutionConditioning(latent_dim=8, num_horizons=3, dropout=0.1)
     out = encoder(x)
     print(out.shape)

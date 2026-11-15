@@ -18,7 +18,7 @@ class ForecastHead(nn.Module):
         num_horizons: int | None = None,
     ):
         super().__init__()
-        hidden_dim = 2 * channels if hidden_dim is None else hidden_dim
+        hidden_dim = max(1, channels // 2) if hidden_dim is None else hidden_dim
         self.num_horizons = num_horizons
         self.norm = nn.LayerNorm(channels)
         self.proj_in = nn.Linear(channels, hidden_dim)

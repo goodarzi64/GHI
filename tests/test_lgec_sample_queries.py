@@ -9,23 +9,23 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from Src.LGEE import LatentGraphEvolutionEncoder
+from Src.LGEC import LatentGraphEvolutionConditioning
 from Src.data_structure import TemporalSplit, build_windowed_dataset
 
 
-def test_lgee_shapes_and_legacy_shared_query_path():
+def test_lgec_shapes_and_legacy_shared_query_path():
     torch.manual_seed(0)
     z_hist = torch.randn(2, 5, 3, 8)
     cov_fut = torch.randn(2, 4, 3, 5)
     z_state = torch.randn(2, 3, 8)
-    encoder = LatentGraphEvolutionEncoder(8, 4, dropout=0.0, cov_dim=5, history_length=5)
+    encoder = LatentGraphEvolutionConditioning(8, 4, dropout=0.0, cov_dim=5, history_length=5)
 
     assert encoder(z_hist).shape == (2, 4, 3, 8)
     assert encoder(z_hist, cov_fut).shape == (2, 4, 3, 8)
     assert encoder(z_hist, None, z_state).shape == (2, 4, 3, 8)
     assert encoder(z_hist, cov_fut, z_state).shape == (2, 4, 3, 8)
 
-    legacy = LatentGraphEvolutionEncoder(8, 4, dropout=0.0, cov_dim=None, history_length=5)
+    legacy = LatentGraphEvolutionConditioning(8, 4, dropout=0.0, cov_dim=None, history_length=5)
     z_flat, queries, (batch_size, num_nodes) = legacy._prepare_inputs(z_hist)
     for block in legacy.blocks:
         queries = block(queries, z_flat, z_flat)
@@ -33,9 +33,9 @@ def test_lgee_shapes_and_legacy_shared_query_path():
     assert torch.equal(legacy(z_hist), expected)
 
 
-def test_lgee_queries_respond_to_future_covariates_and_current_state():
+def test_lgec_queries_respond_to_future_covariates_and_current_state():
     torch.manual_seed(1)
-    encoder = LatentGraphEvolutionEncoder(8, 3, dropout=0.0, cov_dim=5, history_length=5).eval()
+    encoder = LatentGraphEvolutionConditioning(8, 3, dropout=0.0, cov_dim=5, history_length=5).eval()
     z_hist = torch.randn(2, 5, 3, 8)
     cov_fut = torch.randn(2, 3, 3, 5)
     z_state = torch.randn(2, 3, 8)
@@ -50,7 +50,7 @@ def test_lgee_queries_respond_to_future_covariates_and_current_state():
 
 def test_relative_time_bias_has_horizon_history_shape_and_changes_attention():
     torch.manual_seed(2)
-    encoder = LatentGraphEvolutionEncoder(
+    encoder = LatentGraphEvolutionConditioning(
         8, 3, dropout=0.0, cov_dim=None, history_length=5
     ).eval()
     z_hist = torch.randn(2, 5, 3, 8)
@@ -108,9 +108,9 @@ def test_cov_future_alignment_uses_t_plus_h():
 
 
 if __name__ == "__main__":
-    test_lgee_shapes_and_legacy_shared_query_path()
-    test_lgee_queries_respond_to_future_covariates_and_current_state()
+    test_lgec_shapes_and_legacy_shared_query_path()
+    test_lgec_queries_respond_to_future_covariates_and_current_state()
     test_relative_time_bias_has_horizon_history_shape_and_changes_attention()
     test_covariate_names_exclude_weather_and_target_features()
     test_cov_future_alignment_uses_t_plus_h()
-    print("LGEE sample query tests passed")
+    print("LGEC sample query tests passed")
