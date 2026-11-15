@@ -31,17 +31,17 @@ class CurrentStateRefinement(nn.Module):
 
 
 class HorizonAwarePropagationGate(nn.Module):
-    """Learn three graph-wise scalar gates per node and horizon."""
+    """Learn node-wise, feature-wise gates for fusing multi-graph messages."""
 
     def __init__(self, channels: int, horizon_dim: int, dropout: float = 0.1):
         super().__init__()
         self.channels = channels
         self.horizon_dim = horizon_dim
         self.net = nn.Sequential(
-            nn.Linear(4 * channels + horizon_dim, 16),
+            nn.Linear(4 * channels + horizon_dim, 2 * channels),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(16, 3),
+            nn.Linear(2 * channels, 3 * channels),
             nn.Sigmoid(),
         )
 
@@ -53,7 +53,7 @@ class HorizonAwarePropagationGate(nn.Module):
         m_sem: torch.Tensor,
         horizon_emb: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return gates [g_phys, g_wind, g_sem], each shaped [B, N, 1]."""
+        """Return gates [g_phys, g_wind, g_sem], each shaped [B, N, C]."""
         if h.dim() != 3:
             raise ValueError(f"Expected hidden state [B, N, C], got {tuple(h.shape)}")
 
